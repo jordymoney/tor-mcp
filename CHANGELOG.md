@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.2.0] — 2026-07-02
+
+### Fixed
+- **Hidden services (`.onion`)** — no more blind attach when SOCKS 9055 is already open; tor-mcp now verifies bootstrap 100% and probes a known `.onion` before marking ready.
+- Longer default timeout for `.onion` fetches (90s).
+
+### Added
+- **`TOR_MCP_OPERATOR=1`** — unlimited local use for the operator/dev machine (paid trial unchanged for everyone else).
+- `tor_status` reports `onionOk` and operator mode in the status note.
+
 ## [1.1.0] — 2026-07-02
 
 ### Added
