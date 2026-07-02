@@ -28,10 +28,26 @@ function findTorExe() {
   return fromPath
 }
 
+function portOpen(port, host = '127.0.0.1', timeoutMs = 800) {
+  return new Promise((resolve) => {
+    const sock = createConnection(port, host)
+    const done = (open) => {
+      sock.removeAllListeners()
+      sock.destroy()
+      resolve(open)
+    }
+    sock.setTimeout(timeoutMs)
+    sock.on('connect', () => done(true))
+    sock.on('timeout', () => done(false))
+    sock.on('error', () => done(false))
+  })
+}
+
 class TorDaemon {
   constructor() {
     this.proc = null
     this.ready = false
+    this.external = false  // true when reusing an already-running tor on our ports
     this.bootstrapPct = 0
     this.startedAt = null
     this.logs = []
@@ -43,79 +59,95 @@ class TorDaemon {
 
   /**
    * Start tor and wait for "Bootstrapped 100%".
-   * Resolves when ready, rejects after timeout (default 120s).
+   * If SOCKS port is already open (e.g. tor started manually or by another session),
+   * attach to the existing daemon instead of spawning a second one.
    */
-  start(timeoutMs = 120_000) {
-    if (this.ready) return Promise.resolve()
+  async start(timeoutMs = 120_000) {
+    if (this.ready) return
     if (this._startPromise) return this._startPromise
 
-    this._startPromise = new Promise((resolve, reject) => {
-      const exe = findTorExe()
-      const args = [
-        '-f', TORRC,
-        '--DataDirectory', TOR_DATA,
-        '--SOCKSPort', String(SOCKS_PORT),
-        '--ControlPort', String(CONTROL_PORT),
-      ]
+    this._startPromise = (async () => {
+      const socksUp = await portOpen(SOCKS_PORT)
+      if (socksUp) {
+        this.external = true
+        this.ready = true
+        this.bootstrapPct = 100
+        this.startedAt = this.startedAt || new Date().toISOString()
+        this.logs.push(`Attached to existing Tor on SOCKS ${SOCKS_PORT}`)
+        return
+      }
 
-      this.proc = spawn(exe, args, {
-        stdio: ['ignore', 'pipe', 'pipe'],
-        windowsHide: true,
-      })
+      await new Promise((resolve, reject) => {
+        const exe = findTorExe()
+        const args = [
+          '-f', TORRC,
+          '--DataDirectory', TOR_DATA,
+          '--SOCKSPort', String(SOCKS_PORT),
+          '--ControlPort', String(CONTROL_PORT),
+        ]
 
-      this.startedAt = new Date().toISOString()
-      const timer = setTimeout(() => reject(new Error(`Tor bootstrap timed out after ${timeoutMs}ms`)), timeoutMs)
+        this.proc = spawn(exe, args, {
+          stdio: ['ignore', 'pipe', 'pipe'],
+          windowsHide: true,
+        })
 
-      const onData = (data) => {
-        const text = data.toString('utf8')
-        for (const line of text.split('\n')) {
-          const trimmed = line.trim()
-          if (!trimmed) continue
-          this.logs.push(trimmed)
-          if (this.logs.length > 200) this.logs.shift()
+        this.external = false
+        this.startedAt = new Date().toISOString()
+        const timer = setTimeout(() => reject(new Error(`Tor bootstrap timed out after ${timeoutMs}ms`)), timeoutMs)
 
-          const m = trimmed.match(/Bootstrapped\s+(\d+)%/)
-          if (m) {
-            this.bootstrapPct = parseInt(m[1])
-            if (this.bootstrapPct >= 100) {
-              this.ready = true
-              clearTimeout(timer)
-              this.proc.stdout.off('data', onData)
-              this.proc.stderr.off('data', onData)
-              resolve()
+        const onData = (data) => {
+          const text = data.toString('utf8')
+          for (const line of text.split('\n')) {
+            const trimmed = line.trim()
+            if (!trimmed) continue
+            this.logs.push(trimmed)
+            if (this.logs.length > 200) this.logs.shift()
+
+            const m = trimmed.match(/Bootstrapped\s+(\d+)%/)
+            if (m) {
+              this.bootstrapPct = parseInt(m[1])
+              if (this.bootstrapPct >= 100) {
+                this.ready = true
+                clearTimeout(timer)
+                this.proc.stdout?.off('data', onData)
+                this.proc.stderr?.off('data', onData)
+                resolve()
+              }
             }
           }
         }
-      }
 
-      this.proc.stdout.on('data', onData)
-      this.proc.stderr.on('data', onData)
+        this.proc.stdout.on('data', onData)
+        this.proc.stderr.on('data', onData)
 
-      this.proc.on('error', (err) => {
-        clearTimeout(timer)
-        this._startPromise = null
-        if (!this.ready) reject(new Error(`Failed to launch tor: ${err.message}. Run setup.ps1 to install it.`))
-      })
-
-      this.proc.on('exit', (code) => {
-        this.ready = false
-        this._startPromise = null
-        if (code !== 0 && code !== null) {
+        this.proc.on('error', (err) => {
           clearTimeout(timer)
-          reject(new Error(`Tor exited with code ${code}. Check logs: ${this.logs.slice(-5).join(' | ')}`))
-        }
+          this._startPromise = null
+          if (!this.ready) reject(new Error(`Failed to launch tor: ${err.message}. Run setup.ps1 to install it.`))
+        })
+
+        this.proc.on('exit', (code) => {
+          if (this.external) return
+          this.ready = false
+          this._startPromise = null
+          if (code !== 0 && code !== null && !this.ready) {
+            clearTimeout(timer)
+            reject(new Error(`Tor exited with code ${code}. Check logs: ${this.logs.slice(-5).join(' | ')}`))
+          }
+        })
       })
-    })
+    })()
 
     return this._startPromise
   }
 
   stop() {
-    if (this.proc) {
+    if (this.proc && !this.external) {
       this.proc.kill()
       this.proc = null
     }
     this.ready = false
+    this.external = false
     this._startPromise = null
   }
 
@@ -156,7 +188,9 @@ class TorDaemon {
 
   status() {
     return {
-      running: !!this.proc && this.ready,
+      running: this.ready,
+      managed: !!this.proc && !this.external,
+      external: this.external,
       bootstrapPct: this.bootstrapPct,
       startedAt: this.startedAt,
       socksPort: SOCKS_PORT,
