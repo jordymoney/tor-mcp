@@ -146,16 +146,22 @@ function sleep(ms) {
   return new Promise((resolveSleep) => setTimeout(resolveSleep, ms))
 }
 
-/** One retry with fresh circuit when .onion SOCKS fails intermittently. */
+/** One retry with fresh circuit; full tor restart if still failing. */
 async function torFetchResilient(url, opts) {
   try {
     return await torFetch(url, opts)
   } catch (err) {
     if (!url.includes('.onion') || !isRecoverableTorError(err)) throw err
-    await torDaemon.newCircuit()
-    await sleep(3000)
-    await torDaemon.ensureOnionReady(0)
-    return await torFetch(url, opts)
+    try {
+      await torDaemon.newCircuit()
+      await sleep(3000)
+      await torDaemon.ensureOnionReady(0)
+      return await torFetch(url, opts)
+    } catch (err2) {
+      if (!isRecoverableTorError(err2)) throw err2
+      await torDaemon.restart()
+      return await torFetch(url, opts)
+    }
   }
 }
 
@@ -167,7 +173,7 @@ const server = new McpServer({
 
   name: 'tor-mcp',
 
-  version: '1.2.2',
+  version: '1.2.3',
 
 })
 

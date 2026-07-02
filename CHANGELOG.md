@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.2.3] — 2026-07-02
+
+### Fixed
+- **Operator mode (`TOR_MCP_OPERATOR=1`) always owns tor** — no more attaching to stale orphan `tor.exe` on 9055; MCP shuts down and respawns managed tor on startup.
+- **`.onion` fetch recovery** — after `NEWNYM` retry fails, auto `tor_restart` then retry once more.
+- **Probe failure auto-restart** in operator mode when hidden-service check fails.
+- MCP exit shuts down tor on 9055/9056 in operator mode so orphans do not survive Cursor reloads.
+
+### Added
+- `forceManaged` / `operatorMode` in `tor_status`.
+- `scripts/Restart-TorMcp.ps1` — manual kill of stuck tor on 9055/9056.
+
 ## [1.2.2] — 2026-07-02
 
 ### Fixed

@@ -21,6 +21,10 @@ const CONTROL_PORT = parseInt(process.env.TOR_CONTROL_PORT || '9056')
 const TORRC = resolve(HERE, 'torrc')
 const TOR_DATA = resolve(HERE, 'tor-data')
 
+const OPERATOR_MODE = process.env.TOR_MCP_OPERATOR === '1'
+/** Operator/dev: always spawn and own tor — never attach to a stale orphan on 9055. */
+const FORCE_MANAGED = OPERATOR_MODE || process.env.TOR_MCP_FORCE_MANAGED === '1'
+
 /** Known v3 onion used only for local health checks (DuckDuckGo). */
 const ONION_PROBE_URL =
   process.env.TOR_ONION_PROBE_URL ||
@@ -94,7 +98,7 @@ function parseTorVersion(controlText) {
   return m ? m[1].trim() : null
 }
 
-export const MCP_VERSION = '1.2.2'
+export const MCP_VERSION = '1.2.3'
 
 function sleep(ms) {
   return new Promise((resolveSleep) => setTimeout(resolveSleep, ms))
@@ -191,8 +195,12 @@ class TorDaemon {
     if (this._startPromise) return this._startPromise
 
     this._startPromise = (async () => {
-      const socksUp = await portOpen(SOCKS_PORT)
-      if (socksUp) {
+      let socksUp = await portOpen(SOCKS_PORT)
+      if (socksUp && FORCE_MANAGED) {
+        this.logs.push('Force-managed mode: recycling tor on our ports before start')
+        await this.shutdownTorOnPorts()
+        socksUp = await portOpen(SOCKS_PORT)
+      } else if (socksUp) {
         const valid = await this.validateExistingTor()
         if (valid) {
           this.external = true
@@ -207,18 +215,25 @@ class TorDaemon {
         )
       }
 
+      if (socksUp) {
+        throw new Error(
+          `Port ${SOCKS_PORT} still in use after shutdown. Run scripts/Restart-TorMcp.ps1 or reboot, then reload Cursor.`,
+        )
+      }
+
       await new Promise((resolveStart, reject) => {
         const exe = findTorExe()
         const args = [
           '-f', TORRC,
           '--DataDirectory', TOR_DATA,
-          '--SOCKSPort', String(SOCKS_PORT),
-          '--ControlPort', String(CONTROL_PORT),
+          '--SOCKSPort', `127.0.0.1:${SOCKS_PORT}`,
+          '--ControlPort', `127.0.0.1:${CONTROL_PORT}`,
         ]
 
         this.proc = spawn(exe, args, {
           stdio: ['ignore', 'pipe', 'pipe'],
           windowsHide: true,
+          cwd: HERE,
         })
 
         this.external = false
@@ -353,6 +368,8 @@ class TorDaemon {
       running: this.ready,
       managed: !!this.proc && !this.external,
       external: this.external,
+      forceManaged: FORCE_MANAGED,
+      operatorMode: OPERATOR_MODE,
       bootstrapPct: this.bootstrapPct,
       onionOk: this.onionOk,
       lastOnionProbe: this.lastOnionProbe,
@@ -366,16 +383,22 @@ class TorDaemon {
     }
   }
 
-  /** Re-probe hidden services before billable .onion fetches (cached ~30s). */
+  /** Re-probe hidden services before billable .onion fetches (cached ~30s; operator: always fresh). */
   async ensureOnionReady(maxAgeMs = 30_000) {
     if (!this.ready) await this.start()
+    const cacheMs = OPERATOR_MODE ? 0 : maxAgeMs
     const age = this.lastOnionProbeAt ? Date.now() - this.lastOnionProbeAt : Infinity
-    if (age <= maxAgeMs && this.onionOk === true) return true
+    if (cacheMs > 0 && age <= cacheMs && this.onionOk === true) return true
     const probe = await probeOnion()
     this.lastOnionProbe = probe
     this.lastOnionProbeAt = Date.now()
     this.onionOk = probe.ok
     if (!probe.ok) {
+      if (FORCE_MANAGED) {
+        this.logs.push('Onion probe failed — restarting managed tor')
+        await this.restart()
+        return true
+      }
       throw new Error(
         `Hidden service probe failed (${probe.error || `HTTP ${probe.status}`}). ` +
         'Reload Cursor to restart tor-mcp, or stop other apps on port 9055.',
@@ -398,3 +421,15 @@ export function isRecoverableTorError(err) {
   const msg = err?.message || ''
   return /Socks5 proxy rejected|ECONNREFUSED|socket hang up|ETIMEDOUT|aborted/i.test(msg)
 }
+
+function shutdownOnExit() {
+  if (torDaemon.proc && !torDaemon.external) {
+    try { torDaemon.proc.kill() } catch { /* ignore */ }
+  } else if (FORCE_MANAGED) {
+    torDaemon.shutdownTorOnPorts().catch(() => {})
+  }
+}
+
+process.on('exit', shutdownOnExit)
+process.on('SIGINT', () => { shutdownOnExit(); process.exit(0) })
+process.on('SIGTERM', () => { shutdownOnExit(); process.exit(0) })
