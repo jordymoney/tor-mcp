@@ -38,7 +38,7 @@ import fetch from 'node-fetch'
 
 import { SocksProxyAgent } from 'socks-proxy-agent'
 
-import { torDaemon, ensureTor, MCP_VERSION } from './tor-daemon.mjs'
+import { torDaemon, ensureTor, MCP_VERSION, isRecoverableTorError } from './tor-daemon.mjs'
 
 import { gateBillableUse, getQuotaStatus, verifyAndUnlock } from './usage-gate.mjs'
 
@@ -142,6 +142,23 @@ async function torFetch(url, { method = 'GET', headers = {}, body, timeoutMs = 3
 
 }
 
+function sleep(ms) {
+  return new Promise((resolveSleep) => setTimeout(resolveSleep, ms))
+}
+
+/** One retry with fresh circuit when .onion SOCKS fails intermittently. */
+async function torFetchResilient(url, opts) {
+  try {
+    return await torFetch(url, opts)
+  } catch (err) {
+    if (!url.includes('.onion') || !isRecoverableTorError(err)) throw err
+    await torDaemon.newCircuit()
+    await sleep(3000)
+    await torDaemon.ensureOnionReady(0)
+    return await torFetch(url, opts)
+  }
+}
+
 
 
 // ── MCP Server ────────────────────────────────────────────────────────────────
@@ -150,7 +167,7 @@ const server = new McpServer({
 
   name: 'tor-mcp',
 
-  version: '1.2.1',
+  version: '1.2.2',
 
 })
 
@@ -192,7 +209,7 @@ server.tool(
 
     try {
 
-      const result = await torFetch(url, { headers, timeoutMs: timeout_ms })
+      const result = await torFetchResilient(url, { headers, timeoutMs: timeout_ms })
 
       if (warning) result._warning = warning
 
@@ -274,7 +291,7 @@ server.tool(
 
     try {
 
-      const result = await torFetch(url, {
+      const result = await torFetchResilient(url, {
 
         method: 'POST',
 
@@ -377,6 +394,54 @@ server.tool(
     } catch (err) {
 
       return { content: [{ type: 'text', text: JSON.stringify({ ok: false, error: err.message, _quota: gate.quota }) }] }
+
+    }
+
+  },
+
+)
+
+
+
+server.tool(
+
+  'tor_restart',
+
+  'Shut down tor on ports 9055/9056 and start a fresh managed instance. Use when .onion fetches fail intermittently. Free — does not count against trial.',
+
+  {},
+
+  async () => {
+
+    try {
+
+      const status = await torDaemon.restart()
+
+      return {
+
+        content: [{
+
+          type: 'text',
+
+          text: JSON.stringify({
+
+            ok: true,
+
+            message: 'Tor restarted with fresh circuits.',
+
+            mcpVersion: MCP_VERSION,
+
+            ...status,
+
+          }, null, 2),
+
+        }],
+
+      }
+
+    } catch (err) {
+
+      return { content: [{ type: 'text', text: JSON.stringify({ ok: false, error: err.message, mcpVersion: MCP_VERSION }) }] }
 
     }
 

@@ -94,7 +94,11 @@ function parseTorVersion(controlText) {
   return m ? m[1].trim() : null
 }
 
-export const MCP_VERSION = '1.2.1'
+export const MCP_VERSION = '1.2.2'
+
+function sleep(ms) {
+  return new Promise((resolveSleep) => setTimeout(resolveSleep, ms))
+}
 
 async function probeOnion(timeoutMs = 60_000) {
   const agent = new SocksProxyAgent(`socks5h://127.0.0.1:${SOCKS_PORT}`)
@@ -311,6 +315,39 @@ class TorDaemon {
     })
   }
 
+  async shutdownTorOnPorts() {
+    try {
+      await controlTalk(['SIGNAL SHUTDOWN'])
+    } catch {
+      /* port may already be down */
+    }
+    for (let i = 0; i < 30; i++) {
+      if (!(await portOpen(SOCKS_PORT))) return true
+      await sleep(500)
+    }
+    return !(await portOpen(SOCKS_PORT))
+  }
+
+  /** Stop tor on our ports and start a fresh managed instance. */
+  async restart() {
+    if (this.proc && !this.external) {
+      this.proc.kill()
+      this.proc = null
+    } else if (await portOpen(SOCKS_PORT)) {
+      await this.shutdownTorOnPorts()
+    }
+    this.ready = false
+    this.external = false
+    this.onionOk = null
+    this.lastOnionProbe = null
+    this.lastOnionProbeAt = null
+    this._startPromise = null
+    this.bootstrapPct = 0
+    this.startedAt = null
+    await this.start()
+    return this.status()
+  }
+
   status() {
     return {
       running: this.ready,
@@ -319,6 +356,7 @@ class TorDaemon {
       bootstrapPct: this.bootstrapPct,
       onionOk: this.onionOk,
       lastOnionProbe: this.lastOnionProbe,
+      lastOnionProbeAt: this.lastOnionProbeAt,
       torVersion: this.torVersion,
       startedAt: this.startedAt,
       socksPort: SOCKS_PORT,
@@ -354,4 +392,9 @@ export async function ensureTor({ onion = false } = {}) {
   if (!torDaemon.ready) await torDaemon.start()
   if (onion) await torDaemon.ensureOnionReady()
   return torDaemon.proxyUrl
+}
+
+export function isRecoverableTorError(err) {
+  const msg = err?.message || ''
+  return /Socks5 proxy rejected|ECONNREFUSED|socket hang up|ETIMEDOUT|aborted/i.test(msg)
 }

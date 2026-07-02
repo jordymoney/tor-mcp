@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.2.2] — 2026-07-02
+
+### Fixed
+- **Intermittent `.onion` SOCKS failures** — `tor_fetch`/`tor_post` retry once with `NEWNYM` + live re-probe when the proxy rejects a hidden-service connection.
+- Stale attach to long-running `tor.exe` on 9055 can leave bad circuits; use new `tor_restart` to bounce cleanly.
+
+### Added
+- **`tor_restart`** tool — shutdown tor on 9055/9056 and start fresh (free, no trial charge).
+- `lastOnionProbeAt` in `tor_status` for debugging probe vs fetch timing.
+
 ## [1.2.1] — 2026-07-02
 
 ### Fixed
