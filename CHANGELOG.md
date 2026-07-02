@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.2.4] — 2026-07-02
+
+### Fixed
+- **Port conflict / two Tors fighting** — operator mode no longer hard-fails when 9055/9056 stay busy; falls back to attach + live probe instead of spawning a second tor.exe.
+- Graceful shutdown → force-kill listeners only when recycle is needed; then attach if spawn is impossible.
+- MCP exit no longer shuts down attached/external tor (avoids killing another app's Tor).
+
+### Added
+- **Auto-refresh** for operator: `NEWNYM` + DDG onion re-probe every 5 min (`TOR_MCP_REFRESH_MS`, default 300000).
+- Startup refresh after attach (fresh circuits immediately).
+- `attachFallback`, `preferManaged`, `autoRefreshMs` in `tor_status`.
+
 ## [1.2.3] — 2026-07-02
 
 ### Fixed

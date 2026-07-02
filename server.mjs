@@ -159,8 +159,14 @@ async function torFetchResilient(url, opts) {
       return await torFetch(url, opts)
     } catch (err2) {
       if (!isRecoverableTorError(err2)) throw err2
-      await torDaemon.restart()
-      return await torFetch(url, opts)
+      try {
+        await torDaemon.refreshCircuits()
+        return await torFetch(url, opts)
+      } catch (err3) {
+        if (!isRecoverableTorError(err3)) throw err3
+        await torDaemon.restart()
+        return await torFetch(url, opts)
+      }
     }
   }
 }

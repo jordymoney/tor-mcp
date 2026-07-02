@@ -6,7 +6,8 @@
  *   2. ./tor-bin/tor.exe  (placed here by setup.ps1)
  *   3. PATH
  */
-import { spawn } from 'node:child_process'
+import { spawn, execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import { createConnection } from 'node:net'
 import { existsSync, readFileSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
@@ -22,8 +23,14 @@ const TORRC = resolve(HERE, 'torrc')
 const TOR_DATA = resolve(HERE, 'tor-data')
 
 const OPERATOR_MODE = process.env.TOR_MCP_OPERATOR === '1'
-/** Operator/dev: always spawn and own tor — never attach to a stale orphan on 9055. */
-const FORCE_MANAGED = OPERATOR_MODE || process.env.TOR_MCP_FORCE_MANAGED === '1'
+/** Prefer owning tor; if ports stay busy, attach to a working instance instead of failing. */
+const PREFER_MANAGED = OPERATOR_MODE || process.env.TOR_MCP_FORCE_MANAGED === '1'
+const AUTO_REFRESH_MS = parseInt(
+  process.env.TOR_MCP_REFRESH_MS ?? (OPERATOR_MODE ? '300000' : '0'),
+  10,
+)
+
+const execFileAsync = promisify(execFile)
 
 /** Known v3 onion used only for local health checks (DuckDuckGo). */
 const ONION_PROBE_URL =
@@ -98,10 +105,27 @@ function parseTorVersion(controlText) {
   return m ? m[1].trim() : null
 }
 
-export const MCP_VERSION = '1.2.3'
+export const MCP_VERSION = '1.2.4'
 
 function sleep(ms) {
   return new Promise((resolveSleep) => setTimeout(resolveSleep, ms))
+}
+
+async function killListenersOnPort(port) {
+  if (process.platform === 'win32') {
+    try {
+      await execFileAsync('powershell', [
+        '-NoProfile', '-Command',
+        `$p=(Get-NetTCPConnection -LocalPort ${port} -State Listen -ErrorAction SilentlyContinue).OwningProcess|Select-Object -Unique;` +
+        'foreach($id in $p){if($id -gt 0){Stop-Process -Id $id -Force -ErrorAction SilentlyContinue}}',
+      ], { windowsHide: true })
+      await sleep(1000)
+      return !(await portOpen(port))
+    } catch {
+      return false
+    }
+  }
+  return false
 }
 
 async function probeOnion(timeoutMs = 60_000) {
@@ -137,6 +161,8 @@ class TorDaemon {
     this.onionOk = null
     this.lastOnionProbe = null
     this.lastOnionProbeAt = null
+    this.attachFallback = false
+    this._refreshTimer = null
   }
 
   get socksPort() { return SOCKS_PORT }
@@ -186,9 +212,49 @@ class TorDaemon {
     return true
   }
 
+  async attachToExistingTor() {
+    const valid = await this.validateExistingTor()
+    if (!valid) return false
+    this.external = true
+    this.ready = true
+    this.startedAt = this.startedAt || new Date().toISOString()
+    this.logs.push(`Attached to existing Tor on SOCKS ${SOCKS_PORT}`)
+    return true
+  }
+
+  async refreshCircuits() {
+    if (!(await portOpen(CONTROL_PORT))) {
+      throw new Error(`Control port ${CONTROL_PORT} not available for refresh`)
+    }
+    await this.newCircuit()
+    await sleep(3000)
+    const probe = await probeOnion()
+    this.lastOnionProbe = probe
+    this.lastOnionProbeAt = Date.now()
+    this.onionOk = probe.ok
+    this.logs.push(
+      probe.ok
+        ? 'Auto-refresh OK (.onion reachable)'
+        : `Auto-refresh probe failed (${probe.error || `HTTP ${probe.status}`})`,
+    )
+    return probe
+  }
+
+  startAutoRefresh() {
+    if (this._refreshTimer || AUTO_REFRESH_MS <= 0) return
+    this._refreshTimer = setInterval(() => {
+      if (!this.ready) return
+      this.refreshCircuits().catch((err) => {
+        this.logs.push(`Auto-refresh error: ${err.message}`)
+      })
+    }, AUTO_REFRESH_MS)
+    this._refreshTimer.unref?.()
+    this.logs.push(`Auto-refresh every ${Math.round(AUTO_REFRESH_MS / 1000)}s`)
+  }
+
   /**
    * Start tor and wait for "Bootstrapped 100%", then verify .onion works.
-   * If SOCKS is already open, validate it is our Tor with HS support — never blind-attach.
+   * If SOCKS is already open, validate or recycle — never blind-attach without probe.
    */
   async start(timeoutMs = 120_000) {
     if (this.ready) return
@@ -196,28 +262,27 @@ class TorDaemon {
 
     this._startPromise = (async () => {
       let socksUp = await portOpen(SOCKS_PORT)
-      if (socksUp && FORCE_MANAGED) {
-        this.logs.push('Force-managed mode: recycling tor on our ports before start')
-        await this.shutdownTorOnPorts()
+
+      if (socksUp && PREFER_MANAGED) {
+        this.logs.push('Prefer-managed: recycling tor on our ports before start')
+        await this.recycleTorOnPorts()
         socksUp = await portOpen(SOCKS_PORT)
-      } else if (socksUp) {
-        const valid = await this.validateExistingTor()
-        if (valid) {
-          this.external = true
-          this.ready = true
-          this.startedAt = this.startedAt || new Date().toISOString()
-          this.logs.push(`Attached to existing Tor on SOCKS ${SOCKS_PORT}`)
+      }
+
+      if (socksUp) {
+        if (await this.attachToExistingTor()) {
+          this.attachFallback = PREFER_MANAGED
+          try {
+            await this.refreshCircuits()
+          } catch (err) {
+            this.logs.push(`Startup refresh skipped: ${err.message}`)
+          }
+          this.startAutoRefresh()
           return
         }
         throw new Error(
           `Port ${SOCKS_PORT} is in use but hidden services (.onion) are not working. ` +
-          `Stop the process on ${SOCKS_PORT}/${CONTROL_PORT} and reload Cursor so tor-mcp can start its own tor.exe.`,
-        )
-      }
-
-      if (socksUp) {
-        throw new Error(
-          `Port ${SOCKS_PORT} still in use after shutdown. Run scripts/Restart-TorMcp.ps1 or reboot, then reload Cursor.`,
+          `Run scripts/Restart-TorMcp.ps1 or quit the other Tor app, then reload Cursor.`,
         )
       }
 
@@ -292,7 +357,9 @@ class TorDaemon {
         )
       }
       this.ready = true
+      this.attachFallback = false
       this.logs.push('Managed Tor ready with hidden-service support')
+      this.startAutoRefresh()
     })()
 
     return this._startPromise
@@ -334,12 +401,21 @@ class TorDaemon {
     try {
       await controlTalk(['SIGNAL SHUTDOWN'])
     } catch {
-      /* port may already be down */
+      /* not our tor or control unavailable */
     }
-    for (let i = 0; i < 30; i++) {
+    for (let i = 0; i < 20; i++) {
       if (!(await portOpen(SOCKS_PORT))) return true
       await sleep(500)
     }
+    return !(await portOpen(SOCKS_PORT))
+  }
+
+  /** Graceful shutdown, then force-kill listeners if ports stay busy. */
+  async recycleTorOnPorts() {
+    if (await this.shutdownTorOnPorts()) return true
+    this.logs.push('Graceful shutdown did not free ports — force-killing listeners')
+    await killListenersOnPort(SOCKS_PORT)
+    await killListenersOnPort(CONTROL_PORT)
     return !(await portOpen(SOCKS_PORT))
   }
 
@@ -349,10 +425,17 @@ class TorDaemon {
       this.proc.kill()
       this.proc = null
     } else if (await portOpen(SOCKS_PORT)) {
-      await this.shutdownTorOnPorts()
+      if (this.external) {
+        try {
+          await this.refreshCircuits()
+          if (this.onionOk) return this.status()
+        } catch { /* fall through to recycle */ }
+      }
+      await this.recycleTorOnPorts()
     }
     this.ready = false
     this.external = false
+    this.attachFallback = false
     this.onionOk = null
     this.lastOnionProbe = null
     this.lastOnionProbeAt = null
@@ -368,7 +451,9 @@ class TorDaemon {
       running: this.ready,
       managed: !!this.proc && !this.external,
       external: this.external,
-      forceManaged: FORCE_MANAGED,
+      attachFallback: this.attachFallback,
+      preferManaged: PREFER_MANAGED,
+      autoRefreshMs: AUTO_REFRESH_MS,
       operatorMode: OPERATOR_MODE,
       bootstrapPct: this.bootstrapPct,
       onionOk: this.onionOk,
@@ -394,14 +479,19 @@ class TorDaemon {
     this.lastOnionProbeAt = Date.now()
     this.onionOk = probe.ok
     if (!probe.ok) {
-      if (FORCE_MANAGED) {
+      if (this.external) {
+        try {
+          await this.refreshCircuits()
+          if (this.onionOk) return true
+        } catch { /* fall through */ }
+      } else if (PREFER_MANAGED) {
         this.logs.push('Onion probe failed — restarting managed tor')
         await this.restart()
         return true
       }
       throw new Error(
         `Hidden service probe failed (${probe.error || `HTTP ${probe.status}`}). ` +
-        'Reload Cursor to restart tor-mcp, or stop other apps on port 9055.',
+        'Run tor_restart or scripts/Restart-TorMcp.ps1, then reload Cursor.',
       )
     }
     return true
@@ -425,9 +515,8 @@ export function isRecoverableTorError(err) {
 function shutdownOnExit() {
   if (torDaemon.proc && !torDaemon.external) {
     try { torDaemon.proc.kill() } catch { /* ignore */ }
-  } else if (FORCE_MANAGED) {
-    torDaemon.shutdownTorOnPorts().catch(() => {})
   }
+  /* Do not kill external/attached tor — may belong to another app on 9055 */
 }
 
 process.on('exit', shutdownOnExit)
