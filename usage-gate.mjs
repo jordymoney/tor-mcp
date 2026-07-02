@@ -53,17 +53,25 @@ function readLocalUnlockKey() {
   return null
 }
 
+function isOperator() {
+  const v = String(process.env.TOR_MCP_OPERATOR || '').trim().toLowerCase()
+  return v === '1' || v === 'true' || v === 'yes' || v === 'operator'
+}
+
 export function isUnlocked() {
+  if (isOperator()) return true
   return Boolean(readLocalUnlockKey())
 }
 
 export function getQuotaStatus() {
   const state = loadState()
+  const operator = isOperator()
   const unlocked = isUnlocked()
   const used = state.uses
   const limit = FREE_LIMIT
   return {
     unlocked,
+    operator,
     freeLimit: limit,
     used,
     remaining: unlocked ? null : Math.max(0, limit - used),

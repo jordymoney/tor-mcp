@@ -58,6 +58,7 @@ tor_status()
 |---------|---------|-------------|
 | `TOR_MCP_FREE_USES` | `5` | Billable uses before unlock |
 | `TOR_MCP_UNLOCK_KEY` | — | Skip trial if set |
+| `TOR_MCP_OPERATOR` | — | Set `1` on your dev machine for unlimited operator access (not for customers) |
 | `TOR_MCP_VERIFY_URL` | `https://aizamon.com/api/tor-mcp/verify` | Key verification endpoint |
 
 ---
@@ -98,7 +99,18 @@ Add to `~/.cursor/mcp.json` (global, works in every project):
 
 `Ctrl+Shift+P` → **Reload Window**. Tor starts automatically when the MCP server loads.
 
-Run `tor_status` to confirm bootstrap.
+Run `tor_status` to confirm bootstrap and `onionOk: true` before fetching `.onion` URLs.
+
+---
+
+## Troubleshooting `.onion`
+
+If clearnet works but hidden services fail with `Socks5 proxy rejected connection`:
+
+1. **`tor_status`** — look for `onionOk: true`. If false, tor-mcp refused a bad proxy on port 9055.
+2. **Free the ports** — stop anything else on `9055`/`9056`, then reload Cursor.
+3. **Use remote DNS** — clients must use `socks5h://` (tor-mcp does). Plain `socks5://` resolves `.onion` locally and fails.
+4. **First connect is slow** — tor-mcp allows up to 90s for `.onion` fetches; retry once after bootstrap.
 
 ---
 

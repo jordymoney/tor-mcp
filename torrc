@@ -22,10 +22,12 @@ TruncateLogFile 1
 SocksPolicy accept 127.0.0.1
 SocksPolicy reject *
 
-# Reasonable circuit settings
+# Reasonable circuit settings (hidden services often need longer first connect)
 NewCircuitPeriod 30
 MaxCircuitDirtiness 600
 CircuitBuildTimeout 60
+LearnCircuitBuildTimeout 1
+PathsNeededToBuildCircuits 0.25
 
 # Exit nodes: no exit to protect other users; we are a client only
 ExitPolicy reject *:*
