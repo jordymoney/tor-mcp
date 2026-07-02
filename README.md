@@ -26,7 +26,39 @@ Most AI agent web tools make requests directly from your machine's IP. Every API
 | `tor_fetch` | GET any URL (clearnet or `.onion`) through Tor. DNS resolves inside Tor — no leaks. |
 | `tor_post` | POST data through Tor. |
 | `tor_new_circuit` | Request a fresh circuit — your apparent exit IP rotates within ~3 seconds. |
-| `tor_status` | Check daemon health, bootstrap progress, and SOCKS port. |
+| `tor_status` | Check daemon health, bootstrap progress, SOCKS port, and free-trial quota. |
+| `tor_unlock` | Apply your Tor MCP Pro key — removes the trial limit on this machine. |
+
+---
+
+## Free trial & unlock
+
+**5 free uses** — `tor_fetch`, `tor_post`, and `tor_new_circuit` each count once. `tor_status` and `tor_unlock` are always free.
+
+When the trial runs out, network tools return an unlock message instead of fetching. Check remaining quota anytime:
+
+```
+tor_status()
+```
+
+**Unlock unlimited use** ($12 one-time):
+
+1. [Buy Tor MCP Pro](https://aizamon.com/client?sku=SKU_TOR_MCP_PRO) — key emailed after checkout.
+2. In Cursor, run `tor_unlock` with your key **once**, or add to `~/.cursor/mcp.json`:
+
+```json
+"env": {
+  "TOR_MCP_UNLOCK_KEY": "your-key-here"
+}
+```
+
+3. Reload Cursor. `tor_status` should show `unlocked: true`.
+
+| Env var | Default | Description |
+|---------|---------|-------------|
+| `TOR_MCP_FREE_USES` | `5` | Billable uses before unlock |
+| `TOR_MCP_UNLOCK_KEY` | — | Skip trial if set |
+| `TOR_MCP_VERIFY_URL` | `https://aizamon.com/api/tor-mcp/verify` | Key verification endpoint |
 
 ---
 
@@ -143,7 +175,8 @@ Requires: `pip install requests[socks]`
 
 ```
 tor-mcp/
-├── server.mjs          # MCP server (tools: tor_fetch, tor_post, tor_new_circuit, tor_status)
+├── server.mjs          # MCP server (tools + usage gate)
+├── usage-gate.mjs      # 5-use free trial + unlock key verification
 ├── tor-daemon.mjs      # Tor process manager + control port interface
 ├── torrc               # Tor configuration (SOCKS 9055, control 9056, client-only)
 ├── setup.ps1           # Windows: downloads Tor Expert Bundle + npm install
