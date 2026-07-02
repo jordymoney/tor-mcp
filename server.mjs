@@ -38,7 +38,7 @@ import fetch from 'node-fetch'
 
 import { SocksProxyAgent } from 'socks-proxy-agent'
 
-import { torDaemon, ensureTor } from './tor-daemon.mjs'
+import { torDaemon, ensureTor, MCP_VERSION } from './tor-daemon.mjs'
 
 import { gateBillableUse, getQuotaStatus, verifyAndUnlock } from './usage-gate.mjs'
 
@@ -80,7 +80,7 @@ function blockedPayload(gate) {
 
 async function torFetch(url, { method = 'GET', headers = {}, body, timeoutMs = 30_000 } = {}) {
 
-  const proxyUrl = await ensureTor()
+  const proxyUrl = await ensureTor({ onion: url.includes('.onion') })
 
   const agent = new SocksProxyAgent(proxyUrl)
 
@@ -150,7 +150,7 @@ const server = new McpServer({
 
   name: 'tor-mcp',
 
-  version: '1.2.0',
+  version: '1.2.1',
 
 })
 
@@ -396,6 +396,14 @@ server.tool(
 
   async () => {
 
+    if (torDaemon.status().running) {
+      try {
+        await torDaemon.ensureOnionReady()
+      } catch {
+        /* status still reports last probe */
+      }
+    }
+
     const status = torDaemon.status()
 
     const quota = getQuotaStatus()
@@ -426,7 +434,7 @@ server.tool(
 
     return {
 
-      content: [{ type: 'text', text: JSON.stringify({ ...status, quota, note: extra }, null, 2) }],
+      content: [{ type: 'text', text: JSON.stringify({ mcpVersion: MCP_VERSION, ...status, quota, note: extra }, null, 2) }],
 
     }
 

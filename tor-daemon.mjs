@@ -94,19 +94,22 @@ function parseTorVersion(controlText) {
   return m ? m[1].trim() : null
 }
 
-async function probeOnion(timeoutMs = 45_000) {
+export const MCP_VERSION = '1.2.1'
+
+async function probeOnion(timeoutMs = 60_000) {
   const agent = new SocksProxyAgent(`socks5h://127.0.0.1:${SOCKS_PORT}`)
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
   try {
+    // Match tor_fetch: follow redirects to the final hidden-service response.
     const res = await fetch(ONION_PROBE_URL, {
       method: 'GET',
-      headers: { 'User-Agent': 'tor-mcp onion-probe' },
+      headers: { 'User-Agent': 'Mozilla/5.0 (tor-mcp onion-probe)' },
       agent,
       signal: controller.signal,
-      redirect: 'manual',
+      redirect: 'follow',
     })
-    return { ok: res.status > 0 && res.status < 500, status: res.status }
+    return { ok: res.ok, status: res.status, finalUrl: res.url }
   } catch (err) {
     return { ok: false, error: err.message }
   } finally {
@@ -125,6 +128,7 @@ class TorDaemon {
     this.torVersion = null
     this.onionOk = null
     this.lastOnionProbe = null
+    this.lastOnionProbeAt = null
   }
 
   get socksPort() { return SOCKS_PORT }
@@ -160,6 +164,7 @@ class TorDaemon {
 
     const probe = await probeOnion()
     this.lastOnionProbe = probe
+    this.lastOnionProbeAt = Date.now()
     this.onionOk = probe.ok
     if (!probe.ok) {
       this.logs.push(
@@ -259,6 +264,7 @@ class TorDaemon {
 
       const probe = await probeOnion()
       this.lastOnionProbe = probe
+      this.lastOnionProbeAt = Date.now()
       this.onionOk = probe.ok
       if (!probe.ok) {
         throw new Error(
@@ -321,12 +327,31 @@ class TorDaemon {
       recentLog: this.logs.slice(-5),
     }
   }
+
+  /** Re-probe hidden services before billable .onion fetches (cached ~30s). */
+  async ensureOnionReady(maxAgeMs = 30_000) {
+    if (!this.ready) await this.start()
+    const age = this.lastOnionProbeAt ? Date.now() - this.lastOnionProbeAt : Infinity
+    if (age <= maxAgeMs && this.onionOk === true) return true
+    const probe = await probeOnion()
+    this.lastOnionProbe = probe
+    this.lastOnionProbeAt = Date.now()
+    this.onionOk = probe.ok
+    if (!probe.ok) {
+      throw new Error(
+        `Hidden service probe failed (${probe.error || `HTTP ${probe.status}`}). ` +
+        'Reload Cursor to restart tor-mcp, or stop other apps on port 9055.',
+      )
+    }
+    return true
+  }
 }
 
 export const torDaemon = new TorDaemon()
 
 /** Convenience: ensure Tor is up, then return the proxy URL */
-export async function ensureTor() {
+export async function ensureTor({ onion = false } = {}) {
   if (!torDaemon.ready) await torDaemon.start()
+  if (onion) await torDaemon.ensureOnionReady()
   return torDaemon.proxyUrl
 }

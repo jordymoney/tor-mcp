@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.2.1] — 2026-07-02
+
+### Fixed
+- **Onion probe matches `tor_fetch`** — probe now follows redirects and requires `res.ok` (v1.2.0 counted HTTP 301 as success while fetches still failed).
+- **Live re-probe before `.onion` fetches** — `ensureOnionReady()` caches ~30s; `tor_status` refreshes the probe when called.
+
+### Added
+- `mcpVersion` in `tor_status` output so agents can confirm which build Cursor loaded.
+
 ## [1.2.0] — 2026-07-02
 
 ### Fixed
