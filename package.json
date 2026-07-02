@@ -1,0 +1,17 @@
+{
+  "name": "tor-mcp",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "MCP server giving Cursor AI safe private access through a managed Tor daemon",
+  "main": "server.mjs",
+  "scripts": {
+    "start": "node server.mjs",
+    "setup": "powershell -ExecutionPolicy Bypass -File setup.ps1"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "node-fetch": "^3.3.2",
+    "socks-proxy-agent": "^8.0.5",
+    "zod": "^3.23.8"
+  }
+}
