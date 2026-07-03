@@ -1,4 +1,4 @@
-# Nightshade Tor configuration
+# tor-mcp client configuration
 # Ports chosen to avoid conflict with Tor Browser (9050/9051)
 
 # Bind both ports explicitly to localhost — not accessible from the network

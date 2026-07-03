@@ -20,7 +20,11 @@
 
  *
 
- * Free tier: 5 billable uses (fetch/post/circuit) without unlock.
+ *   tor_restart      — Restart local Tor (free, recovery)
+
+ *
+
+ * Free tier: 5 successful billable uses (fetch/post/circuit) without unlock.
 
  * All DNS resolves inside Tor (socks5h). No clearnet DNS leaks.
 
@@ -40,11 +44,16 @@ import { SocksProxyAgent } from 'socks-proxy-agent'
 
 import { torDaemon, ensureTor, MCP_VERSION, isRecoverableTorError, isInstantSocksReject } from './tor-daemon.mjs'
 
-import { gateBillableUse, getQuotaStatus, verifyAndUnlock } from './usage-gate.mjs'
+import { gateBillableCheck, gateBillableCommit, getQuotaStatus, initUsageGate, verifyAndUnlock } from './usage-gate.mjs'
 
 
 
-// ── Boot Tor on server start ──────────────────────────────────────────────────
+// ── Boot: verify license, then Tor ────────────────────────────────────────────
+
+const licenseInit = await initUsageGate()
+if (!licenseInit.ok) {
+  process.stderr.write(`[tor-mcp] ${licenseInit.message}\n`)
+}
 
 torDaemon.start().catch((err) => {
 
@@ -53,6 +62,10 @@ torDaemon.start().catch((err) => {
   process.stderr.write(`[tor-mcp] Run setup.ps1 to install the Tor Expert Bundle.\n`)
 
 })
+
+function billableSucceeded(result) {
+  return Boolean(result && (result.ok === true || typeof result.status === 'number'))
+}
 
 
 
@@ -187,7 +200,7 @@ const server = new McpServer({
 
   name: 'tor-mcp',
 
-  version: '1.2.5',
+  version: '1.3.0',
 
 })
 
@@ -211,7 +224,7 @@ server.tool(
 
   async ({ url, headers, timeout_ms }) => {
 
-    const gate = gateBillableUse('tor_fetch')
+    const gate = gateBillableCheck('tor_fetch')
 
     if (!gate.allowed) {
 
@@ -231,9 +244,11 @@ server.tool(
 
       const result = await torFetchResilient(url, { headers, timeoutMs: timeout_ms })
 
+      if (billableSucceeded(result)) await gateBillableCommit()
+
       if (warning) result._warning = warning
 
-      result._quota = gate.quota
+      result._quota = getQuotaStatus()
 
       if (gate.trialWarning) result._trialWarning = gate.trialWarning
 
@@ -255,7 +270,7 @@ server.tool(
 
             _warning: warning,
 
-            _quota: gate.quota,
+            _quota: getQuotaStatus(),
 
           }),
 
@@ -293,7 +308,7 @@ server.tool(
 
   async ({ url, body, content_type, headers, timeout_ms }) => {
 
-    const gate = gateBillableUse('tor_post')
+    const gate = gateBillableCheck('tor_post')
 
     if (!gate.allowed) {
 
@@ -323,9 +338,11 @@ server.tool(
 
       })
 
+      if (billableSucceeded(result)) await gateBillableCommit()
+
       if (warning) result._warning = warning
 
-      result._quota = gate.quota
+      result._quota = getQuotaStatus()
 
       if (gate.trialWarning) result._trialWarning = gate.trialWarning
 
@@ -347,7 +364,7 @@ server.tool(
 
             _warning: warning,
 
-            _quota: gate.quota,
+            _quota: getQuotaStatus(),
 
           }),
 
@@ -373,7 +390,7 @@ server.tool(
 
   async () => {
 
-    const gate = gateBillableUse('tor_new_circuit')
+    const gate = gateBillableCheck('tor_new_circuit')
 
     if (!gate.allowed) {
 
@@ -386,6 +403,8 @@ server.tool(
     try {
 
       const result = await torDaemon.newCircuit()
+
+      await gateBillableCommit()
 
       return {
 
@@ -401,7 +420,7 @@ server.tool(
 
             ...result,
 
-            _quota: gate.quota,
+            _quota: getQuotaStatus(),
 
             _trialWarning: gate.trialWarning || undefined,
 
@@ -413,7 +432,7 @@ server.tool(
 
     } catch (err) {
 
-      return { content: [{ type: 'text', text: JSON.stringify({ ok: false, error: err.message, _quota: gate.quota }) }] }
+      return { content: [{ type: 'text', text: JSON.stringify({ ok: false, error: err.message, _quota: getQuotaStatus() }) }] }
 
     }
 
@@ -503,13 +522,13 @@ server.tool(
 
       ? quota.operator
 
-        ? `✓ Tor is ready.${hsNote} Operator mode — unlimited use.`
+        ? `✓ Tor is ready.${hsNote} Unlimited use (operator).`
 
         : quota.unlocked
 
           ? `✓ Tor is ready.${hsNote} Unlimited use (unlocked).`
 
-          : `✓ Tor is ready.${hsNote} Free trial: ${quota.used}/${quota.freeLimit} uses${quota.remaining === 0 ? ' — unlock at ' + quota.unlockUrl : ''}.`
+          : `✓ Tor is ready.${hsNote} Free trial: ${quota.used}/${quota.freeLimit} successful uses${quota.remaining === 0 ? ' — unlock at ' + quota.unlockUrl : ''}.`
 
       : status.bootstrapPct > 0
 

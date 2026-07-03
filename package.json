@@ -1,12 +1,21 @@
 {
   "name": "tor-mcp",
-  "version": "1.0.0",
+  "version": "1.3.0",
   "type": "module",
   "description": "MCP server giving Cursor AI safe private access through a managed Tor daemon",
   "main": "server.mjs",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jordymoney/tor-mcp.git"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
     "start": "node server.mjs",
-    "setup": "powershell -ExecutionPolicy Bypass -File setup.ps1"
+    "setup": "powershell -ExecutionPolicy Bypass -File setup.ps1",
+    "sweep": "node scripts/sweep-onions.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1",

@@ -21,19 +21,20 @@ Most AI agent web tools make requests directly from your machine's IP. Every API
 
 ## Tools
 
-| Tool | Description |
-|------|-------------|
-| `tor_fetch` | GET any URL (clearnet or `.onion`) through Tor. DNS resolves inside Tor — no leaks. |
-| `tor_post` | POST data through Tor. |
-| `tor_new_circuit` | Request a fresh circuit — your apparent exit IP rotates within ~3 seconds. |
-| `tor_status` | Check daemon health, bootstrap progress, SOCKS port, and free-trial quota. |
-| `tor_unlock` | Apply your Tor MCP Pro key — removes the trial limit on this machine. |
+| Tool | Description | Trial |
+|------|-------------|-------|
+| `tor_fetch` | GET any URL (clearnet or `.onion`) through Tor. DNS resolves inside Tor — no leaks. | 1 use on success |
+| `tor_post` | POST data through Tor. | 1 use on success |
+| `tor_new_circuit` | Request a fresh circuit — your apparent exit IP rotates within ~3 seconds. | 1 use on success |
+| `tor_status` | Check daemon health, bootstrap progress, SOCKS port, and free-trial quota. | Free |
+| `tor_unlock` | Apply your Tor MCP Pro key — removes the trial limit on this machine. | Free |
+| `tor_restart` | Restart local Tor on ports 9055/9056 (recovery when `.onion` fails). | Free |
 
 ---
 
 ## Free trial & unlock
 
-**5 free uses** — `tor_fetch`, `tor_post`, and `tor_new_circuit` each count once. `tor_status` and `tor_unlock` are always free.
+**5 free successful uses** — `tor_fetch`, `tor_post`, and `tor_new_circuit` each count **once per successful operation** (failed requests do not consume trial uses). `tor_status`, `tor_unlock`, and `tor_restart` are always free.
 
 When the trial runs out, network tools return an unlock message instead of fetching. Check remaining quota anytime:
 
@@ -41,7 +42,7 @@ When the trial runs out, network tools return an unlock message instead of fetch
 tor_status()
 ```
 
-**Unlock unlimited use** ($12 one-time):
+**Unlock unlimited use** — [$12 one-time at aizamon.com](https://aizamon.com/client?sku=SKU_TOR_MCP_PRO) (wallet agents: ~$7.80 USDC via [agent store](https://aizamon.com/agent-store.json)):
 
 1. [Buy Tor MCP Pro](https://aizamon.com/client?sku=SKU_TOR_MCP_PRO) — key emailed after checkout.
 2. In Cursor, run `tor_unlock` with your key **once**, or add to `~/.cursor/mcp.json`:
@@ -52,13 +53,13 @@ tor_status()
 }
 ```
 
-3. Reload Cursor. `tor_status` should show `unlocked: true`.
+3. **Reload Cursor.** Keys are verified online at startup. `tor_status` should show `unlocked: true`.
+
+**Support:** [aizamon.com/client](https://aizamon.com/client) · lost key → use the email from checkout · [GitHub issues](https://github.com/jordymoney/tor-mcp/issues)
 
 | Env var | Default | Description |
 |---------|---------|-------------|
-| `TOR_MCP_FREE_USES` | `5` | Billable uses before unlock |
-| `TOR_MCP_UNLOCK_KEY` | — | Skip trial if set |
-| `TOR_MCP_OPERATOR` | — | Set `1` on your dev machine for unlimited operator access (not for customers) |
+| `TOR_MCP_UNLOCK_KEY` | — | Pro unlock key (verified online on startup) |
 | `TOR_MCP_VERIFY_URL` | `https://aizamon.com/api/tor-mcp/verify` | Key verification endpoint |
 
 ---
@@ -74,7 +75,7 @@ cd tor-mcp
 powershell -ExecutionPolicy Bypass -File setup.ps1
 ```
 
-> **Linux/macOS:** Install Tor via your package manager (`sudo apt install tor` / `brew install tor`), then just run `npm install`. The server will find `tor` on your PATH automatically.
+> **Linux/macOS:** Install Tor via your package manager (`sudo apt install tor` / `brew install tor`), then run `npm install`. The server finds `tor` on your PATH automatically.
 
 ### 2. Register in Cursor
 
@@ -99,18 +100,25 @@ Add to `~/.cursor/mcp.json` (global, works in every project):
 
 `Ctrl+Shift+P` → **Reload Window**. Tor starts automatically when the MCP server loads.
 
-Run `tor_status` to confirm bootstrap and `onionOk: true` before fetching `.onion` URLs.
+Run `tor_status` to confirm `running: true` and `onionOk: true` before fetching `.onion` URLs.
 
 ---
 
-## Troubleshooting `.onion`
+## Troubleshooting
 
-If clearnet works but hidden services fail with `Socks5 proxy rejected connection`:
+### `.onion` fails
 
-1. **`tor_status`** — look for `onionOk: true`. If false, tor-mcp refused a bad proxy on port 9055.
-2. **Free the ports** — stop anything else on `9055`/`9056`, then reload Cursor.
-3. **Use remote DNS** — clients must use `socks5h://` (tor-mcp does). Plain `socks5://` resolves `.onion` locally and fails.
-4. **First connect is slow** — tor-mcp allows up to 90s for `.onion` fetches; retry once after bootstrap.
+1. **`tor_status`** — look for `onionOk: true` and `mcpVersion: "1.3.0"`.
+2. **`tor_restart`** — free recovery tool; wait ~30s, then retry.
+3. **Port conflict** — if something else uses `9055`/`9056` (Tor Browser uses `9050`/`9051`), quit it or run `scripts/Restart-TorMcp.ps1`, then reload Cursor.
+4. **One fetch at a time** — do not batch parallel `.onion` requests; tor-mcp serializes them automatically.
+5. **First connect is slow** — up to 90s for `.onion`; instant `Socks5 proxy rejected` usually means bad circuits (auto-retries with NEWNYM).
+
+### Trial / unlock
+
+- Failed fetches **do not** count against the 5-use trial.
+- Keys must verify online at startup (7-day offline grace after first successful verify).
+- Revoked keys stop working on next online verify.
 
 ---
 
@@ -121,15 +129,9 @@ If clearnet works but hidden services fail with `Socks5 proxy rejected connectio
 tor_fetch("https://check.torproject.org/api/ip")
 ```
 
-**Scrape a page without leaving your IP:**
-```
-tor_fetch("https://example.com/prices", { headers: { "Accept": "text/html" } })
-```
-
 **Rotate exit node between requests:**
 ```
 tor_new_circuit()
-// wait ~3s, then fetch again from a different country
 tor_fetch("https://api.example.com/data")
 ```
 
@@ -143,14 +145,14 @@ tor_fetch("http://duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion
 ## Privacy guarantees
 
 - **`socks5h://`** — hostname resolution happens inside Tor, never on your machine. No DNS leaks.
-- **Localhost-only binding** — SOCKS port `9055` and control port `9056` only accept connections from `127.0.0.1`. Nothing is exposed to your network.
-- **Cookie authentication** — the Tor control port uses file-based cookie auth. No unauthenticated access.
+- **Localhost-only binding** — SOCKS port `9055` and control port `9056` only accept connections from `127.0.0.1`.
+- **Cookie authentication** — the Tor control port uses file-based cookie auth.
 - **Client only** — the `torrc` sets `ExitPolicy reject *:*`. This node never relays other people's traffic.
-- **HTTP warning** — `tor_fetch` and `tor_post` will flag plain `http://` URLs in the response. The Tor exit node can read unencrypted traffic; use HTTPS when possible.
+- **HTTP warning** — `tor_fetch` and `tor_post` flag plain `http://` URLs. Use HTTPS when possible.
 
 **What this does NOT protect against:**
-- Tor's fundamental limitation: a nation-state adversary controlling both your entry and exit nodes can de-anonymize via timing correlation.
-- Application-level identity: if you pass auth cookies or are logged into a site, the site still knows who you are.
+- Nation-state adversaries correlating entry/exit timing.
+- Application-level identity (cookies, logins).
 
 ---
 
@@ -162,24 +164,7 @@ tor_fetch("http://duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion
 | `TOR_CONTROL_PORT` | `9056` | Tor control port |
 | `TOR_BIN` | auto-detect | Path to `tor` / `tor.exe` if not in `./tor-bin/` or PATH |
 
-Ports `9055`/`9056` are chosen to avoid conflict with Tor Browser (`9050`/`9051`). Both can run simultaneously.
-
----
-
-## Python helper
-
-If you use Python scripts alongside the MCP server, `tor_session.py` gives you a requests-compatible session routed through the same Tor proxy:
-
-```python
-from tor_session import tor_get, new_circuit
-
-response = tor_get("https://api.example.com/data")
-print(response.json())
-
-new_circuit()  # rotate exit IP
-```
-
-Requires: `pip install requests[socks]`
+Ports `9055`/`9056` avoid conflict with Tor Browser (`9050`/`9051`).
 
 ---
 
@@ -188,16 +173,18 @@ Requires: `pip install requests[socks]`
 ```
 tor-mcp/
 ├── server.mjs          # MCP server (tools + usage gate)
-├── usage-gate.mjs      # 5-use free trial + unlock key verification
-├── tor-daemon.mjs      # Tor process manager + control port interface
-├── torrc               # Tor configuration (SOCKS 9055, control 9056, client-only)
-├── setup.ps1           # Windows: downloads Tor Expert Bundle + npm install
-├── package.json
-└── tor-bin/            # tor.exe lives here after setup (git-ignored)
+├── usage-gate.mjs      # Trial + online key verification
+├── tor-daemon.mjs      # Tor process manager + HS warmup
+├── torrc               # Tor configuration (client-only)
+├── setup.ps1           # Windows: downloads Tor Expert Bundle
+├── scripts/
+│   ├── Restart-TorMcp.ps1
+│   └── sweep-onions.mjs
+└── tor-bin/            # tor.exe after setup (git-ignored)
 ```
 
 ---
 
 ## License
 
-MIT
+MIT — source is open. **Tor MCP Pro** unlimited use requires a valid paid unlock key verified via [aizamon.com](https://aizamon.com/client?sku=SKU_TOR_MCP_PRO).

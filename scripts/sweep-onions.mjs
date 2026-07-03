@@ -2,7 +2,7 @@
 /** One-at-a-time onion sweep — run from tor-mcp dir. Do not run while MCP is fetching. */
 import fetch from 'node-fetch'
 import { SocksProxyAgent } from 'socks-proxy-agent'
-import { torDaemon, isInstantSocksReject } from '../tor-daemon.mjs'
+import { torDaemon, MCP_VERSION, isInstantSocksReject } from '../tor-daemon.mjs'
 
 const SITES = [
   { name: 'Facebook-canary', url: 'https://facebookwkhpilnemxj7asaniu7vnjjbiltxjqhye3mhbshg7kx5tfyd.onion/' },
@@ -46,7 +46,7 @@ async function tryUrl(name, url, proxy) {
 
 await torDaemon.start()
 const proxy = torDaemon.proxyUrl
-console.log('proxy', proxy, 'mcpVersion 1.2.5')
+console.log('proxy', proxy, 'mcpVersion', MCP_VERSION)
 for (const s of SITES) {
   const r = await torDaemon.withOnionLock(() => tryUrl(s.name, s.url, proxy))
   console.log(JSON.stringify(r))

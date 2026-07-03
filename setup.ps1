@@ -129,13 +129,14 @@ Write-Host "  +--------------------------------------------+" -ForegroundColor D
 Write-Host "  |   Setup complete!                          |" -ForegroundColor Green
 Write-Host "  +--------------------------------------------+" -ForegroundColor DarkMagenta
 Write-Host ""
-Write-Host "  Next: add tor-mcp to .cursor/mcp.json" -ForegroundColor White
-Write-Host "  (already done if you ran the Aizamon AI setup)" -ForegroundColor DarkGray
+Write-Host "  Next: add tor-mcp to ~/.cursor/mcp.json (see README.md)" -ForegroundColor White
 Write-Host ""
 Write-Host "  Tor SOCKS port : 9055" -ForegroundColor DarkCyan
 Write-Host "  Tor control    : 9056" -ForegroundColor DarkCyan
 Write-Host ""
 Write-Host "  The MCP server auto-starts tor.exe when Cursor loads it." -ForegroundColor DarkGray
-Write-Host "  Use tor_status tool to verify, tor_new_circuit to rotate IP." -ForegroundColor DarkGray
+Write-Host "  Use tor_status to verify, tor_restart if .onion fails." -ForegroundColor DarkGray
 Write-Host ""
-Read-Host "Press Enter to close"
+if ([Environment]::UserInteractive) {
+  Read-Host "Press Enter to close"
+}

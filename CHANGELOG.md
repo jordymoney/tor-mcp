@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.3.0] — 2026-07-02 — Shippable release
+
+### Fixed (customer-facing)
+- **Trial counts successful uses only** — failed/timeouts no longer consume free uses.
+- **Unlock keys verified online on startup** — env/file keys must pass `/api/tor-mcp/verify`; revoked keys cleared.
+- **7-day offline grace** after first successful verify (travel/offline use).
+- **Version alignment** — `package.json`, server, and daemon all `1.3.0`.
+- **Missing `scripts/Restart-TorMcp.ps1`** added; README documents `tor_restart`.
+
+### Changed
+- Removed customer docs for bypass env vars (`TOR_MCP_OPERATOR`, `TOR_MCP_FREE_USES`).
+- Operator/dev flags hidden from `tor_status` unless `TOR_MCP_OPERATOR=1`.
+- README: trial-on-success, support, troubleshooting, correct pricing ($12 / ~$7.80 agent).
+
 ## [1.2.5] — 2026-07-02
 
 ### Fixed

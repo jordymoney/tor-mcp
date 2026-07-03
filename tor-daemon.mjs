@@ -110,7 +110,7 @@ function parseTorVersion(controlText) {
   return m ? m[1].trim() : null
 }
 
-export const MCP_VERSION = '1.2.5'
+export const MCP_VERSION = '1.3.0'
 
 function sleep(ms) {
   return new Promise((resolveSleep) => setTimeout(resolveSleep, ms))
@@ -520,14 +520,10 @@ class TorDaemon {
   }
 
   status() {
-    return {
+    const s = {
       running: this.ready,
       managed: !!this.proc && !this.external,
       external: this.external,
-      attachFallback: this.attachFallback,
-      preferManaged: PREFER_MANAGED,
-      autoRefreshMs: AUTO_REFRESH_MS,
-      operatorMode: OPERATOR_MODE,
       bootstrapPct: this.bootstrapPct,
       onionOk: this.onionOk,
       lastOnionProbe: this.lastOnionProbe,
@@ -539,6 +535,13 @@ class TorDaemon {
       proxyUrl: this.proxyUrl,
       recentLog: this.logs.slice(-5),
     }
+    if (OPERATOR_MODE) {
+      s.attachFallback = this.attachFallback
+      s.preferManaged = PREFER_MANAGED
+      s.autoRefreshMs = AUTO_REFRESH_MS
+      s.operatorMode = true
+    }
+    return s
   }
 
   /** Pre-fetch HS check: canary when recently warm; full warm if last fetch failed. */
