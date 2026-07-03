@@ -32,10 +32,15 @@ const AUTO_REFRESH_MS = parseInt(
 
 const execFileAsync = promisify(execFile)
 
-/** Known v3 onion used only for local health checks (DuckDuckGo). */
+/** DDG — secondary confirm after canary warmup. */
 const ONION_PROBE_URL =
   process.env.TOR_ONION_PROBE_URL ||
   'http://duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion/'
+
+/** Facebook — HS canary; any HTTP response (incl. 500) means circuits work. */
+const ONION_CANARY_URL =
+  process.env.TOR_ONION_CANARY_URL ||
+  'https://facebookwkhpilnemxj7asaniu7vnjjbiltxjqhye3mhbshg7kx5tfyd.onion/'
 
 function findTorExe() {
   if (process.env.TOR_BIN && existsSync(process.env.TOR_BIN)) return process.env.TOR_BIN
@@ -105,7 +110,7 @@ function parseTorVersion(controlText) {
   return m ? m[1].trim() : null
 }
 
-export const MCP_VERSION = '1.2.4'
+export const MCP_VERSION = '1.2.5'
 
 function sleep(ms) {
   return new Promise((resolveSleep) => setTimeout(resolveSleep, ms))
@@ -128,25 +133,62 @@ async function killListenersOnPort(port) {
   return false
 }
 
-async function probeOnion(timeoutMs = 60_000) {
+async function fetchOnionUrl(url, timeoutMs = 90_000) {
   const agent = new SocksProxyAgent(`socks5h://127.0.0.1:${SOCKS_PORT}`)
+  const t0 = Date.now()
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
   try {
-    // Match tor_fetch: follow redirects to the final hidden-service response.
-    const res = await fetch(ONION_PROBE_URL, {
+    const res = await fetch(url, {
       method: 'GET',
       headers: { 'User-Agent': 'Mozilla/5.0 (tor-mcp onion-probe)' },
       agent,
       signal: controller.signal,
       redirect: 'follow',
     })
-    return { ok: res.ok, status: res.status, finalUrl: res.url }
+    await res.text().catch(() => '')
+    const ms = Date.now() - t0
+    return { ok: res.ok, hsReachable: true, status: res.status, finalUrl: res.url, ms }
   } catch (err) {
-    return { ok: false, error: err.message }
+    const ms = Date.now() - t0
+    return {
+      ok: false,
+      hsReachable: false,
+      error: err.message,
+      ms,
+      instantReject: isInstantSocksReject(err, ms),
+    }
   } finally {
     clearTimeout(timer)
   }
+}
+
+/** Warm HS circuits: Facebook canary (any HTTP) then DDG (must be ok). */
+async function warmHiddenServiceCircuits() {
+  await sleep(2000)
+  const canary = await fetchOnionUrl(ONION_CANARY_URL)
+  const ddg = await fetchOnionUrl(ONION_PROBE_URL, 60_000)
+  const ok = canary.hsReachable && ddg.ok
+  return {
+    ok,
+    canary,
+    ddg,
+    status: ddg.status,
+    finalUrl: ddg.finalUrl,
+    error: ok ? undefined : (canary.error || ddg.error),
+  }
+}
+
+async function warmCanaryOnly() {
+  const canary = await fetchOnionUrl(ONION_CANARY_URL)
+  return { ok: canary.hsReachable, canary }
+}
+
+export function isInstantSocksReject(err, ms = null) {
+  const msg = err?.message || ''
+  if (!/Socks5 proxy rejected/i.test(msg)) return false
+  if (ms == null) return true
+  return ms < 5000
 }
 
 class TorDaemon {
@@ -163,6 +205,44 @@ class TorDaemon {
     this.lastOnionProbeAt = null
     this.attachFallback = false
     this._refreshTimer = null
+    this._onionOpChain = Promise.resolve()
+  }
+
+  /** Serialize all hidden-service work — parallel fetches break Tor circuits. */
+  withOnionLock(fn) {
+    const run = this._onionOpChain.then(fn, fn)
+    this._onionOpChain = run.catch(() => {})
+    return run
+  }
+
+  markOnionFetchFailed(err) {
+    this.onionOk = false
+    this.lastOnionProbe = { ok: false, source: 'fetch', error: err?.message || String(err) }
+    this.lastOnionProbeAt = Date.now()
+  }
+
+  async warmWithRetries(maxAttempts = 3) {
+    for (let i = 0; i < maxAttempts; i++) {
+      const probe = await warmHiddenServiceCircuits()
+      this.lastOnionProbe = probe
+      this.lastOnionProbeAt = Date.now()
+      this.onionOk = probe.ok
+      if (probe.ok) {
+        this.logs.push(
+          `HS warmup OK (canary HTTP ${probe.canary.status}, DDG ${probe.ddg.status})`,
+        )
+        return probe
+      }
+      const instant = probe.canary?.instantReject || probe.ddg?.instantReject
+      if (i < maxAttempts - 1) {
+        this.logs.push(
+          `HS warmup ${i + 1}/${maxAttempts} failed${instant ? ' (instant reject)' : ''} — NEWNYM`,
+        )
+        try { await this.newCircuit() } catch { /* control may be down */ }
+        await sleep(instant ? 6000 : 4000)
+      }
+    }
+    return this.lastOnionProbe
   }
 
   get socksPort() { return SOCKS_PORT }
@@ -196,19 +276,16 @@ class TorDaemon {
       return false
     }
 
-    const probe = await probeOnion()
-    this.lastOnionProbe = probe
-    this.lastOnionProbeAt = Date.now()
-    this.onionOk = probe.ok
+    const probe = await this.warmWithRetries(2)
     if (!probe.ok) {
       this.logs.push(
-        `Hidden-service probe failed (${probe.error || `HTTP ${probe.status}`}). ` +
+        `Hidden-service warmup failed (${probe.error || 'canary/DDG'}). ` +
         'Use socks5h (remote DNS). If another app owns port 9055, stop it and restart tor-mcp.',
       )
       return false
     }
 
-    this.logs.push('Hidden-service probe OK (.onion reachable)')
+    this.logs.push('Hidden-service warmup OK (canary + DDG)')
     return true
   }
 
@@ -227,15 +304,12 @@ class TorDaemon {
       throw new Error(`Control port ${CONTROL_PORT} not available for refresh`)
     }
     await this.newCircuit()
-    await sleep(3000)
-    const probe = await probeOnion()
-    this.lastOnionProbe = probe
-    this.lastOnionProbeAt = Date.now()
-    this.onionOk = probe.ok
+    await sleep(4000)
+    const probe = await this.warmWithRetries(2)
     this.logs.push(
       probe.ok
-        ? 'Auto-refresh OK (.onion reachable)'
-        : `Auto-refresh probe failed (${probe.error || `HTTP ${probe.status}`})`,
+        ? 'Auto-refresh OK (canary + DDG)'
+        : `Auto-refresh failed (${probe.error || 'warmup'})`,
     )
     return probe
   }
@@ -346,14 +420,13 @@ class TorDaemon {
         })
       })
 
-      const probe = await probeOnion()
-      this.lastOnionProbe = probe
-      this.lastOnionProbeAt = Date.now()
+      await sleep(3000)
+      const probe = await this.warmWithRetries(3)
       this.onionOk = probe.ok
       if (!probe.ok) {
         throw new Error(
-          `Tor bootstrapped but .onion probe failed: ${probe.error || `HTTP ${probe.status}`}. ` +
-          'Check system clock and network; retry tor_status in a minute.',
+          `Tor bootstrapped but HS warmup failed: ${probe.error || 'canary/DDG unreachable'}. ` +
+          'Retry tor_status in a minute.',
         )
       }
       this.ready = true
@@ -468,31 +541,36 @@ class TorDaemon {
     }
   }
 
-  /** Re-probe hidden services before billable .onion fetches (cached ~30s; operator: always fresh). */
+  /** Pre-fetch HS check: canary when recently warm; full warm if last fetch failed. */
   async ensureOnionReady(maxAgeMs = 30_000) {
     if (!this.ready) await this.start()
     const cacheMs = OPERATOR_MODE ? 0 : maxAgeMs
     const age = this.lastOnionProbeAt ? Date.now() - this.lastOnionProbeAt : Infinity
     if (cacheMs > 0 && age <= cacheMs && this.onionOk === true) return true
-    const probe = await probeOnion()
-    this.lastOnionProbe = probe
-    this.lastOnionProbeAt = Date.now()
-    this.onionOk = probe.ok
-    if (!probe.ok) {
-      if (this.external) {
-        try {
-          await this.refreshCircuits()
-          if (this.onionOk) return true
-        } catch { /* fall through */ }
-      } else if (PREFER_MANAGED) {
-        this.logs.push('Onion probe failed — restarting managed tor')
-        await this.restart()
-        return true
+
+    if (this.onionOk === false) {
+      const probe = await this.warmWithRetries(2)
+      if (!probe.ok) {
+        throw new Error(
+          `Hidden service warmup failed (${probe.error || 'canary/DDG'}). ` +
+          'Run tor_restart if this persists.',
+        )
       }
-      throw new Error(
-        `Hidden service probe failed (${probe.error || `HTTP ${probe.status}`}). ` +
-        'Run tor_restart or scripts/Restart-TorMcp.ps1, then reload Cursor.',
-      )
+      return true
+    }
+
+    const canary = await warmCanaryOnly()
+    this.lastOnionProbe = { ok: canary.ok, source: 'canary', canary: canary.canary }
+    this.lastOnionProbeAt = Date.now()
+    this.onionOk = canary.ok
+    if (!canary.ok) {
+      const probe = await this.warmWithRetries(2)
+      if (!probe.ok) {
+        throw new Error(
+          `HS canary failed (${canary.canary.error || 'instant reject'}). ` +
+          'Circuits not ready for hidden services.',
+        )
+      }
     }
     return true
   }
@@ -503,7 +581,9 @@ export const torDaemon = new TorDaemon()
 /** Convenience: ensure Tor is up, then return the proxy URL */
 export async function ensureTor({ onion = false } = {}) {
   if (!torDaemon.ready) await torDaemon.start()
-  if (onion) await torDaemon.ensureOnionReady()
+  if (onion) {
+    await torDaemon.withOnionLock(() => torDaemon.ensureOnionReady())
+  }
   return torDaemon.proxyUrl
 }
 

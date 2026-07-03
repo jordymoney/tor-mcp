@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.2.5] — 2026-07-02
+
+### Fixed
+- **HS circuit warmup** — Facebook canary (any HTTP = pipe works) then DDG before `onionOk`; post-bootstrap settle + NEWNYM on instant SOCKS reject (~2ms).
+- **Serialized `.onion` fetches** — global lock prevents parallel fetches from killing Tor / fighting MCP restart.
+- **Fetch failures clear `onionOk`** — stale DDG probe no longer masks bad circuit state.
+- **Recovery without `tor_restart`** — up to 4 `NEWNYM` + wait retries on instant reject; no auto full restart on fetch (avoids port fights / MCP disconnect).
+
+### Changed
+- `sweep-onions.mjs` uses same lock; reports `instantReject` timing.
+
 ## [1.2.4] — 2026-07-02
 
 ### Fixed

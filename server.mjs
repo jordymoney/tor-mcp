@@ -38,7 +38,7 @@ import fetch from 'node-fetch'
 
 import { SocksProxyAgent } from 'socks-proxy-agent'
 
-import { torDaemon, ensureTor, MCP_VERSION, isRecoverableTorError } from './tor-daemon.mjs'
+import { torDaemon, ensureTor, MCP_VERSION, isRecoverableTorError, isInstantSocksReject } from './tor-daemon.mjs'
 
 import { gateBillableUse, getQuotaStatus, verifyAndUnlock } from './usage-gate.mjs'
 
@@ -78,9 +78,9 @@ function blockedPayload(gate) {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-async function torFetch(url, { method = 'GET', headers = {}, body, timeoutMs = 30_000 } = {}) {
+async function torFetch(url, { method = 'GET', headers = {}, body, timeoutMs = 30_000, skipOnionEnsure = false } = {}) {
 
-  const proxyUrl = await ensureTor({ onion: url.includes('.onion') })
+  const proxyUrl = await ensureTor({ onion: url.includes('.onion') && !skipOnionEnsure })
 
   const agent = new SocksProxyAgent(proxyUrl)
 
@@ -146,29 +146,37 @@ function sleep(ms) {
   return new Promise((resolveSleep) => setTimeout(resolveSleep, ms))
 }
 
-/** One retry with fresh circuit; full tor restart if still failing. */
+/** NEWNYM retries on instant SOCKS reject — no auto tor_restart (avoids port fights). */
 async function torFetchResilient(url, opts) {
-  try {
-    return await torFetch(url, opts)
-  } catch (err) {
-    if (!url.includes('.onion') || !isRecoverableTorError(err)) throw err
-    try {
-      await torDaemon.newCircuit()
-      await sleep(3000)
-      await torDaemon.ensureOnionReady(0)
-      return await torFetch(url, opts)
-    } catch (err2) {
-      if (!isRecoverableTorError(err2)) throw err2
+  const isOnion = url.includes('.onion')
+  const maxAttempts = isOnion ? 4 : 1
+  let lastErr
+
+  const run = async () => {
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
       try {
-        await torDaemon.refreshCircuits()
-        return await torFetch(url, opts)
-      } catch (err3) {
-        if (!isRecoverableTorError(err3)) throw err3
-        await torDaemon.restart()
-        return await torFetch(url, opts)
+        const result = await torFetch(url, { ...opts, skipOnionEnsure: isOnion })
+        return result
+      } catch (err) {
+        lastErr = err
+        if (!isOnion || !isRecoverableTorError(err)) throw err
+        torDaemon.markOnionFetchFailed(err)
+        if (attempt >= maxAttempts - 1) break
+        const instant = isInstantSocksReject(err)
+        await torDaemon.newCircuit().catch(() => {})
+        await sleep(instant ? 6000 : 4000)
       }
     }
+    throw lastErr
   }
+
+  if (isOnion) {
+    return torDaemon.withOnionLock(async () => {
+      await torDaemon.ensureOnionReady()
+      return run()
+    })
+  }
+  return run()
 }
 
 
@@ -179,7 +187,7 @@ const server = new McpServer({
 
   name: 'tor-mcp',
 
-  version: '1.2.3',
+  version: '1.2.5',
 
 })
 
