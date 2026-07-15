@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.3.1] — 2026-07-15 — Pay-per-call permits
+
+### Added
+- **Call permits after free trial** — redeem `SKU_AG_TOR_CALL_01` tokens via `GET /api/v1/tor-call-permit`.
+- **`tor_add_call_permit`** tool + `TOR_MCP_CALL_TOKEN` env to queue tokens from `/x402/v1/tor-call`.
+- Exhausted-trial errors now point at `$0.05` x402 call buy **and** Pro unlock.
+
+### Changed
+- `gateBillableCheck` is async; billable tools await permit redeem when trial is exhausted.
+
+
 ## [1.3.0] — 2026-07-02 — Shippable release
 
 ### Fixed (customer-facing)

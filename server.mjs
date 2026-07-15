@@ -44,7 +44,7 @@ import { SocksProxyAgent } from 'socks-proxy-agent'
 
 import { torDaemon, ensureTor, MCP_VERSION, isRecoverableTorError, isInstantSocksReject } from './tor-daemon.mjs'
 
-import { gateBillableCheck, gateBillableCommit, getQuotaStatus, initUsageGate, verifyAndUnlock } from './usage-gate.mjs'
+import { gateBillableCheck, gateBillableCommit, getQuotaStatus, initUsageGate, verifyAndUnlock, addCallPermit } from './usage-gate.mjs'
 
 
 
@@ -200,7 +200,7 @@ const server = new McpServer({
 
   name: 'tor-mcp',
 
-  version: '1.3.0',
+  version: '1.3.1',
 
 })
 
@@ -210,7 +210,7 @@ server.tool(
 
   'tor_fetch',
 
-  'Fetch a URL through the Tor network (clearnet or .onion). DNS resolves inside Tor — no IP leaks. Returns status, content-type, and up to 32 KB of body. Free trial: 5 uses, then unlock at aizamon.com/client?sku=SKU_TOR_MCP_PRO.',
+  'Fetch a URL through the Tor network (clearnet or .onion). DNS resolves inside Tor — no IP leaks. Returns status, content-type, and up to 32 KB of body. Free trial: 5 uses, then $0.05 call permit (aizamon.com/x402/v1/tor-call) or Pro unlock.',
 
   {
 
@@ -224,7 +224,7 @@ server.tool(
 
   async ({ url, headers, timeout_ms }) => {
 
-    const gate = gateBillableCheck('tor_fetch')
+    const gate = await gateBillableCheck('tor_fetch')
 
     if (!gate.allowed) {
 
@@ -290,7 +290,7 @@ server.tool(
 
   'tor_post',
 
-  'POST data to a URL through the Tor network. Use for form submissions, API calls, or .onion services. Counts against the 5-use free trial.',
+  'POST data to a URL through the Tor network. Use for form submissions, API calls, or .onion services. Counts against the 5-use free trial (then call permit or Pro).',
 
   {
 
@@ -308,7 +308,7 @@ server.tool(
 
   async ({ url, body, content_type, headers, timeout_ms }) => {
 
-    const gate = gateBillableCheck('tor_post')
+    const gate = await gateBillableCheck('tor_post')
 
     if (!gate.allowed) {
 
@@ -384,13 +384,13 @@ server.tool(
 
   'tor_new_circuit',
 
-  'Ask Tor for a fresh circuit — your apparent exit IP changes within a few seconds. Counts against the 5-use free trial.',
+  'Ask Tor for a fresh circuit — your apparent exit IP changes within a few seconds. Counts against the 5-use free trial (then call permit or Pro).',
 
   {},
 
   async () => {
 
-    const gate = gateBillableCheck('tor_new_circuit')
+    const gate = await gateBillableCheck('tor_new_circuit')
 
     if (!gate.allowed) {
 
@@ -563,6 +563,31 @@ server.tool(
   async ({ key }) => {
 
     const result = await verifyAndUnlock(key)
+
+    return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] }
+
+  },
+
+)
+
+
+
+
+server.tool(
+
+  'tor_add_call_permit',
+
+  'Queue a paid Tor call permit token from aizamon.com (GET /x402/v1/tor-call → result.torCallPermit.token). After the free trial, each billable tool redeems one permit. Free — does not count against trial.',
+
+  {
+
+    token: z.string().min(8).describe('torCallPermit.token from SKU_AG_TOR_CALL_01 /x402/v1/tor-call'),
+
+  },
+
+  async ({ token }) => {
+
+    const result = addCallPermit(token)
 
     return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] }
 

@@ -1,7 +1,10 @@
 /**
  * Free-tier usage gate for Tor MCP network tools.
  * tor_fetch, tor_post, and tor_new_circuit count against the trial (on success only).
- * tor_status, tor_unlock, and tor_restart are always free.
+ * tor_status, tor_unlock, tor_add_call_permit, and tor_restart are always free.
+ *
+ * After the free trial: either SKU_TOR_MCP_PRO unlock (unlimited) OR per-call permits
+ * from GET /x402/v1/tor-call → result.torCallPermit.token (SKU_AG_TOR_CALL_01).
  */
 import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
@@ -13,16 +16,23 @@ const TOR_DATA = resolve(HERE, 'tor-data')
 const USAGE_PATH = resolve(TOR_DATA, 'usage-gate.json')
 const UNLOCK_PATH = resolve(TOR_DATA, 'unlock.key')
 const UNLOCK_META_PATH = resolve(TOR_DATA, 'unlock.meta.json')
+const CALL_PERMITS_PATH = resolve(TOR_DATA, 'call-permits.json')
 
 export const FREE_LIMIT = Math.max(1, parseInt(process.env.TOR_MCP_FREE_USES || '5', 10))
 const VERIFY_URL = (process.env.TOR_MCP_VERIFY_URL || 'https://aizamon.com/api/tor-mcp/verify').replace(/\/$/, '')
 const UNLOCK_URL = process.env.TOR_MCP_UNLOCK_URL || 'https://aizamon.com/client?sku=SKU_TOR_MCP_PRO'
+const CALL_PERMIT_REDEEM_URL = (
+  process.env.TOR_MCP_CALL_PERMIT_URL || 'https://aizamon.com/api/v1/tor-call-permit'
+).replace(/\/$/, '')
+const CALL_BUY_URL = process.env.TOR_MCP_CALL_BUY_URL || 'https://aizamon.com/x402/v1/tor-call'
 const OFFLINE_GRACE_MS = 7 * 24 * 60 * 60 * 1000
 
 let unlockVerified = false
 let unlockOfflineGrace = false
 let initDone = false
 let gateChain = Promise.resolve()
+/** Set when a call permit was redeemed for the in-flight billable op. */
+let permitAuthorizedForNextCommit = false
 
 function ensureDataDir() {
   if (!existsSync(TOR_DATA)) mkdirSync(TOR_DATA, { recursive: true })
@@ -93,6 +103,108 @@ function isOperator() {
   return v === '1' || v === 'true' || v === 'yes' || v === 'operator'
 }
 
+function loadCallPermits() {
+  ensureDataDir()
+  const tokens = []
+  const envRaw = String(process.env.TOR_MCP_CALL_TOKEN || process.env.TOR_MCP_CALL_TOKENS || '').trim()
+  if (envRaw) {
+    for (const part of envRaw.split(/[\s,;]+/)) {
+      const t = part.trim()
+      if (t) tokens.push(t)
+    }
+  }
+  if (existsSync(CALL_PERMITS_PATH)) {
+    try {
+      const raw = JSON.parse(readFileSync(CALL_PERMITS_PATH, 'utf8'))
+      const list = Array.isArray(raw.tokens) ? raw.tokens : []
+      for (const t of list) {
+        const s = String(t || '').trim()
+        if (s && !tokens.includes(s)) tokens.push(s)
+      }
+    } catch { /* ignore */ }
+  }
+  return tokens
+}
+
+function saveCallPermits(tokens) {
+  ensureDataDir()
+  writeFileSync(
+    CALL_PERMITS_PATH,
+    JSON.stringify({ tokens: tokens.slice(), updatedAt: new Date().toISOString() }, null, 2),
+    { mode: 0o600 },
+  )
+}
+
+/** Queue a purchased call-permit token (from /x402/v1/tor-call fulfill). */
+export function addCallPermit(token) {
+  const trimmed = String(token || '').trim()
+  if (!trimmed || trimmed.length < 8) {
+    return { ok: false, error: 'missing_token', message: 'Provide result.torCallPermit.token from SKU_AG_TOR_CALL_01.' }
+  }
+  const tokens = loadCallPermits().filter((t) => t !== trimmed)
+  tokens.push(trimmed)
+  saveCallPermits(tokens)
+  return {
+    ok: true,
+    queued: tokens.length,
+    buyMore: CALL_BUY_URL,
+    note: 'Next billable tool after free trial will redeem one permit via aizamon.com.',
+  }
+}
+
+async function redeemCallPermitRemote(token) {
+  const url = `${CALL_PERMIT_REDEEM_URL}?token=${encodeURIComponent(token)}`
+  const resp = await fetch(url, {
+    method: 'GET',
+    headers: { 'x-aizamon-tor-call-token': token, accept: 'application/json' },
+    signal: AbortSignal.timeout(15_000),
+  })
+  const data = await resp.json().catch(() => ({}))
+  return {
+    ok: Boolean(resp.ok && data.ok && data.authorized),
+    error: data.error || (resp.ok ? null : `http_${resp.status}`),
+    callsRemaining: data.callsRemaining,
+    permitId: data.permitId || null,
+  }
+}
+
+/**
+ * Redeem one queued call permit against Aizamon.
+ * Returns { ok:true } on success; removes dead tokens from the queue.
+ */
+export async function tryRedeemCallPermit() {
+  return withGateLock(async () => {
+    let tokens = loadCallPermits()
+    while (tokens.length) {
+      const token = tokens[0]
+      tokens = tokens.slice(1)
+      try {
+        const result = await redeemCallPermitRemote(token)
+        if (result.ok) {
+          saveCallPermits(tokens)
+          return {
+            ok: true,
+            permitId: result.permitId,
+            callsRemainingOnPermit: result.callsRemaining,
+            queuedRemaining: tokens.length,
+          }
+        }
+      } catch (err) {
+        tokens = [token, ...tokens]
+        saveCallPermits(tokens)
+        return {
+          ok: false,
+          error: 'redeem_unreachable',
+          message: err.message || String(err),
+          queued: tokens.length,
+        }
+      }
+      saveCallPermits(tokens)
+    }
+    return { ok: false, error: 'no_call_permits', queued: 0 }
+  })
+}
+
 async function verifyKeyRemote(key) {
   const resp = await fetch(VERIFY_URL, {
     method: 'POST',
@@ -160,13 +272,16 @@ export function getQuotaStatus() {
   const unlocked = isUnlocked()
   const used = state.uses
   const limit = FREE_LIMIT
+  const callPermitsQueued = loadCallPermits().length
   const quota = {
     unlocked,
     freeLimit: limit,
     used,
     remaining: unlocked ? null : Math.max(0, limit - used),
+    callPermitsQueued,
     billableTools: ['tor_fetch', 'tor_post', 'tor_new_circuit'],
     unlockUrl: UNLOCK_URL,
+    callBuyUrl: CALL_BUY_URL,
   }
   if (unlocked && unlockOfflineGrace) {
     quota.offlineGrace = true
@@ -177,26 +292,51 @@ export function getQuotaStatus() {
   return quota
 }
 
-/** Check trial without consuming a use. */
-export function gateBillableCheck(toolName) {
+function exhaustedPayload(toolName, redeemFail) {
+  const quota = getQuotaStatus()
+  const hasQueued = quota.callPermitsQueued > 0
+  return {
+    allowed: false,
+    blocked: true,
+    error: 'trial_exhausted',
+    tool: toolName,
+    message:
+      `Free trial exhausted (${FREE_LIMIT}/${FREE_LIMIT} successful uses). ` +
+      (hasQueued
+        ? 'Queued call permit(s) failed to redeem — buy a fresh $0.05 permit or unlock Pro.'
+        : `Buy one call ($0.05) at ${CALL_BUY_URL} or unlimited Pro at ${UNLOCK_URL}`),
+    quota,
+    redeemError: redeemFail?.error || null,
+    hint:
+      'Per-call: GET /x402/v1/tor-call → pay → set TOR_MCP_CALL_TOKEN=<result.torCallPermit.token> or run tor_add_call_permit. ' +
+      'Unlimited: buy SKU_TOR_MCP_PRO then run tor_unlock.',
+    buyCall: CALL_BUY_URL,
+    buyPro: UNLOCK_URL,
+  }
+}
+
+/** Check trial / permit without consuming a use (permit redeem happens here when trial is done). */
+export async function gateBillableCheck(toolName) {
+  permitAuthorizedForNextCommit = false
+
   if (isUnlocked()) {
     return { allowed: true, quota: getQuotaStatus() }
   }
 
   const state = loadState()
   if (state.uses >= FREE_LIMIT) {
-    const quota = getQuotaStatus()
-    return {
-      allowed: false,
-      blocked: true,
-      error: 'trial_exhausted',
-      tool: toolName,
-      message:
-        `Free trial exhausted (${FREE_LIMIT}/${FREE_LIMIT} successful uses). Unlock at ${UNLOCK_URL}`,
-      quota,
-      hint:
-        'After purchase, run tor_unlock with your key or set TOR_MCP_UNLOCK_KEY in ~/.cursor/mcp.json env, then reload Cursor.',
+    const redeemed = await tryRedeemCallPermit()
+    if (redeemed.ok) {
+      permitAuthorizedForNextCommit = true
+      return {
+        allowed: true,
+        permitCall: true,
+        quota: getQuotaStatus(),
+        permit: redeemed,
+        trialWarning: 'Paid call permit redeemed for this request ($0.05). Queue more via tor_add_call_permit.',
+      }
     }
+    return exhaustedPayload(toolName, redeemed)
   }
 
   const remaining = FREE_LIMIT - state.uses
@@ -205,14 +345,18 @@ export function gateBillableCheck(toolName) {
     quota: getQuotaStatus(),
     trialWarning:
       remaining === 1
-        ? `Last free use — next successful ${toolName} requires SKU_TOR_MCP_PRO unlock.`
+        ? `Last free use — next successful ${toolName} needs SKU_TOR_MCP_PRO or a $0.05 call permit (${CALL_BUY_URL}).`
         : null,
   }
 }
 
-/** Consume one trial use after a successful billable operation. */
+/** Consume one trial use after a successful billable operation (skip if permit already redeemed). */
 export function gateBillableCommit() {
   if (isUnlocked()) return
+  if (permitAuthorizedForNextCommit) {
+    permitAuthorizedForNextCommit = false
+    return
+  }
   return withGateLock(async () => {
     const state = loadState()
     if (state.uses < FREE_LIMIT) {
