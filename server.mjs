@@ -16,6 +16,10 @@
 
  *   tor_set_exit_country — Prefer exits in one country for clearnet (not .onion)
 
+ *   tor_research     — Search + fetch + extract title/price/stock JSON
+
+ *   tor_geo_compare  — Same clearnet URL via multiple exit countries (deal scout)
+
  *   tor_status       — Check daemon health and bootstrap progress
 
  *   tor_unlock       — Apply a purchased unlock key (unlimited use)
@@ -26,7 +30,7 @@
 
  *
 
- * Free tier: 5 successful billable uses (fetch/post/circuit) without unlock.
+ * Free tier: 5 successful billable uses (fetch/post/circuit/research/geo) without unlock.
 
  * All DNS resolves inside Tor (socks5h). No clearnet DNS leaks.
 
@@ -47,6 +51,8 @@ import { SocksProxyAgent } from 'socks-proxy-agent'
 import { torDaemon, ensureTor, MCP_VERSION, isRecoverableTorError, isInstantSocksReject } from './tor-daemon.mjs'
 
 import { gateBillableCheck, gateBillableCommit, getQuotaStatus, initUsageGate, verifyAndUnlock, addCallPermit } from './usage-gate.mjs'
+
+import { runResearch, runGeoCompare } from './research.mjs'
 
 
 
@@ -496,7 +502,7 @@ server.tool(
 
   'tor_set_exit_country',
 
-  'Prefer Tor exit nodes in one country for clearnet websites (ISO code like us, ca, de, gb). Pass "any" to clear. Does NOT affect .onion sites. Verifies with a geo lookup when possible. Free — does not count against trial.',
+  'Prefer Tor exit nodes in one country for clearnet websites (ISO code like us, ca, de, gb). Pass "any" to clear. Does NOT affect .onion sites. Default is soft prefer (not strict) so circuits do not hang. Verifies with a geo lookup when possible. Free — does not count against trial.',
 
   {
 
@@ -510,15 +516,23 @@ server.tool(
 
       .describe('Two-letter country code (us, ca, de, gb, nl, …) or "any" to clear'),
 
+    strict: z
+
+      .boolean()
+
+      .optional()
+
+      .describe('If true, ONLY use that country (can hang). Default false = prefer.'),
+
   },
 
-  async ({ country }) => {
+  async ({ country, strict }) => {
 
     try {
 
       await ensureTor({ onion: false })
 
-      const result = await torDaemon.setExitCountry(country, { verify: true })
+      const result = await torDaemon.setExitCountry(country, { verify: true, strict: Boolean(strict) })
 
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] }
 
@@ -539,6 +553,248 @@ server.tool(
             hint: 'Some countries have few Tor exits — try us, de, nl, or gb. .onion traffic ignores exit country.',
 
             exitCountry: torDaemon.status().exitCountry || null,
+
+          }, null, 2),
+
+        }],
+
+      }
+
+    }
+
+  },
+
+)
+
+
+
+server.tool(
+
+  'tor_research',
+
+  'Ban-resistant research pack: optional DuckDuckGo .onion search + fetch URLs through Tor, then extract title, prices, stock hints, and key snippets as structured JSON. One successful run = one billable use.',
+
+  {
+
+    query: z.string().min(2).max(200).optional().describe('Search query via DuckDuckGo onion HTML'),
+
+    urls: z.array(z.string().url()).max(6).optional().describe('Direct http(s) or .onion URLs to fetch'),
+
+    maxSearchHits: z.number().int().min(1).max(8).optional().describe('Max DDG hits to keep (default 5)'),
+
+    maxPages: z.number().int().min(1).max(6).optional().describe('Max pages to fetch+extract (default 4)'),
+
+    followSearchHits: z.boolean().optional().describe('Fetch top search hit pages (default true)'),
+
+  },
+
+  async ({ query, urls, maxSearchHits, maxPages, followSearchHits }) => {
+
+    const gate = await gateBillableCheck()
+
+    if (!gate.allowed) {
+
+      return { content: [{ type: 'text', text: JSON.stringify({ ok: false, error: gate.error, _quota: getQuotaStatus() }) }] }
+
+    }
+
+    if (!query && !(urls && urls.length)) {
+
+      return {
+
+        content: [{
+
+          type: 'text',
+
+          text: JSON.stringify({ ok: false, error: 'Provide query and/or urls', _quota: getQuotaStatus() }),
+
+        }],
+
+      }
+
+    }
+
+    try {
+
+      const result = await runResearch(torFetchResilient, {
+
+        query: query || null,
+
+        urls: urls || [],
+
+        maxSearchHits: maxSearchHits ?? 5,
+
+        maxPages: maxPages ?? 4,
+
+        followSearchHits: followSearchHits !== false,
+
+      })
+
+      if (result.ok) await gateBillableCommit()
+
+      return {
+
+        content: [{
+
+          type: 'text',
+
+          text: JSON.stringify({ ...result, _quota: getQuotaStatus(), _trialWarning: gate.trialWarning || undefined }, null, 2),
+
+        }],
+
+      }
+
+    } catch (err) {
+
+      return { content: [{ type: 'text', text: JSON.stringify({ ok: false, error: err.message, _quota: getQuotaStatus() }) }] }
+
+    }
+
+  },
+
+)
+
+
+
+server.tool(
+
+  'tor_geo_compare',
+
+  'Deal / geo price scout. Prefer urls[] for storefront compare (amazon.ca vs amazon.com). Or pass url + countries for best-effort Tor exit prefer. One successful run = one billable use. Not for .onion.',
+
+  {
+
+    url: z.string().url().optional().describe('Single clearnet URL to re-fetch via exit countries'),
+
+    urls: z
+
+      .array(z.string().url())
+
+      .min(1)
+
+      .max(6)
+
+      .optional()
+
+      .describe('Locale storefront URLs to compare (recommended for deals)'),
+
+    countries: z
+
+      .array(z.string().min(2).max(2))
+
+      .min(1)
+
+      .max(6)
+
+      .optional()
+
+      .describe('ISO exit countries when using url mode (default de, nl)'),
+
+    strict: z
+
+      .boolean()
+
+      .optional()
+
+      .describe('Hard-pin exits (often hangs). Default false.'),
+
+  },
+
+  async ({ url, urls, countries, strict }) => {
+
+    const gate = await gateBillableCheck()
+
+    if (!gate.allowed) {
+
+      return { content: [{ type: 'text', text: JSON.stringify({ ok: false, error: gate.error, _quota: getQuotaStatus() }) }] }
+
+    }
+
+    if (!url && !(urls && urls.length)) {
+
+      return {
+
+        content: [{
+
+          type: 'text',
+
+          text: JSON.stringify({ ok: false, error: 'Provide urls[] (recommended) or url + countries', _quota: getQuotaStatus() }),
+
+        }],
+
+      }
+
+    }
+
+    try {
+
+      const result = await runGeoCompare(
+
+        torFetchResilient,
+
+        async (country, opts = {}) =>
+
+          torDaemon.setExitCountry(country, {
+
+            verify: false,
+
+            strict: Boolean(opts.strict ?? strict),
+
+          }),
+
+        {
+
+          url: url || null,
+
+          urls: urls || null,
+
+          countries: countries || ['de', 'nl'],
+
+          settleMs: 3000,
+
+          matchAttempts: 4,
+
+          strict: Boolean(strict),
+
+          newCircuitFn: () => torDaemon.newCircuit(),
+
+        },
+
+      )
+
+      )
+
+      if (result.ok) await gateBillableCommit()
+
+      return {
+
+        content: [{
+
+          type: 'text',
+
+          text: JSON.stringify({ ...result, _quota: getQuotaStatus(), _trialWarning: gate.trialWarning || undefined }, null, 2),
+
+        }],
+
+      }
+
+    } catch (err) {
+
+      return {
+
+        content: [{
+
+          type: 'text',
+
+          text: JSON.stringify({
+
+            ok: false,
+
+            error: err.message,
+
+            hint: 'Clearnet only. Prefer us/de/nl/gb exits. Amazon often blocks Tor — try vendor/SaaS pages or ifconfig.co/json for geo proof.',
+
+            _quota: getQuotaStatus(),
 
           }, null, 2),
 

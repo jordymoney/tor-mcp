@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.3.3] — 2026-07-16 — Research pack + geo deal scout
+
+### Added
+- **`tor_research`** — DuckDuckGo `.onion` search and/or direct URL fetches; extracts title, prices, stock hints, snippets as structured JSON.
+- **`tor_geo_compare`** — deal scout with two modes:
+  - `urls[]` — compare locale storefronts (amazon.ca vs amazon.com) through Tor (recommended)
+  - `url` + `countries` — soft ExitNodes prefer + circuit retries (best-effort)
+- `research.mjs` extraction helpers (JSON-LD offers, currency patterns, DDG HTML parse).
+
+### Changed
+- Exit country defaults to **soft prefer** (`StrictNodes=0`); optional `strict: true` hard-pin (can hang).
+- Exit geo verify uses ifconfig.co (opt-in via `verify: true`).
+
+### Note
+- Each successful research/geo run counts as **one** billable use (not per URL).
+
 ## [1.3.2] — 2026-07-16 — Exit country preference
 
 ### Added

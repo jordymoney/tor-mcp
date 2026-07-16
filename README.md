@@ -27,6 +27,8 @@ Most AI agent web tools make requests directly from your machine's IP. Every API
 | `tor_post` | POST data through Tor. | 1 use on success |
 | `tor_new_circuit` | Request a fresh circuit — your apparent exit IP rotates within ~3 seconds. | 1 use on success |
 | `tor_set_exit_country` | Prefer exits in one country for **clearnet** (`us`, `de`, …). Pass `any` to clear. Not for `.onion`. | Free |
+| `tor_research` | Search (DDG onion) and/or fetch URLs; extract title, prices, stock, snippets as JSON. | 1 use on success |
+| `tor_geo_compare` | Deal scout: `urls[]` locale pages (recommended) or same URL via exit countries. | 1 use on success |
 | `tor_status` | Check daemon health, bootstrap progress, SOCKS port, exit country, and free-trial quota. | Free |
 | `tor_unlock` | Apply your Tor MCP Pro key — removes the trial limit on this machine. | Free |
 | `tor_restart` | Restart local Tor on ports 9055/9056 (recovery when `.onion` fails). | Free |
@@ -35,7 +37,7 @@ Most AI agent web tools make requests directly from your machine's IP. Every API
 
 ## Free trial & unlock
 
-**5 free successful uses** — `tor_fetch`, `tor_post`, and `tor_new_circuit` each count **once per successful operation** (failed requests do not consume trial uses). `tor_status`, `tor_set_exit_country`, `tor_unlock`, and `tor_restart` are always free.
+**5 free successful uses** — `tor_fetch`, `tor_post`, `tor_new_circuit`, `tor_research`, and `tor_geo_compare` each count **once per successful operation** (failed requests do not consume trial uses). `tor_status`, `tor_set_exit_country`, `tor_unlock`, and `tor_restart` are always free.
 
 When the trial runs out, network tools return an unlock message instead of fetching. Check remaining quota anytime:
 

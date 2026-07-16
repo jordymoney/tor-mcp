@@ -110,7 +110,7 @@ function parseTorVersion(controlText) {
   return m ? m[1].trim() : null
 }
 
-export const MCP_VERSION = '1.3.2'
+export const MCP_VERSION = '1.3.3'
 
 const EXIT_COUNTRY_PATH = resolve(TOR_DATA, 'exit-country.json')
 
@@ -579,8 +579,11 @@ class TorDaemon {
       throw new Error(`Control port ${CONTROL_PORT} not available — start Tor first`)
     }
 
+    // Soft prefer by default (StrictNodes=0). Strict=1 often hangs when that
+    // country has few exits that will connect to the destination.
+    const strict = Boolean(opts.strict)
     const commands = code
-      ? [`SETCONF ExitNodes={${code}}`, 'SETCONF StrictNodes=1']
+      ? [`SETCONF ExitNodes={${code}}`, `SETCONF StrictNodes=${strict ? '1' : '0'}`]
       : ['RESETCONF ExitNodes', 'RESETCONF StrictNodes']
 
     const buf = await controlTalk(commands, 12_000)
@@ -588,14 +591,17 @@ class TorDaemon {
 
     this.exitCountry = code
     saveExitCountryPref(code)
-    this.logs.push(code ? `Exit country set to {${code}} (strict)` : 'Exit country cleared (any)')
+    this.logs.push(
+      code
+        ? `Exit country set to {${code}} (${strict ? 'strict' : 'prefer'})`
+        : 'Exit country cleared (any)',
+    )
 
     await this.newCircuit()
-    // Give Tor a moment to build a new exit circuit
-    await sleep(3500)
+    await sleep(strict ? 5000 : 3500)
 
     let verified = null
-    if (opts.verify !== false && code) {
+    if (opts.verify === true && code) {
       verified = await this.verifyExitCountry(code)
     }
 
@@ -603,9 +609,9 @@ class TorDaemon {
       ok: true,
       exitCountry: code,
       exitCountryName: code ? EXIT_COUNTRY_HINTS[code] || null : null,
-      strictNodes: Boolean(code),
+      strictNodes: strict,
       note: code
-        ? `Clearnet exits prefer {${code}}. .onion sites ignore this setting.`
+        ? `Clearnet exits prefer {${code}}${strict ? ' (strict)' : ''}. .onion sites ignore this setting.`
         : 'Exit country cleared — Tor picks any exit.',
       verified,
       hints: Object.keys(EXIT_COUNTRY_HINTS).sort(),
@@ -617,15 +623,15 @@ class TorDaemon {
     try {
       const agent = new SocksProxyAgent(`socks5h://127.0.0.1:${SOCKS_PORT}`)
       const controller = new AbortController()
-      const timer = setTimeout(() => controller.abort(), 45_000)
-      const res = await fetch('https://ipapi.co/json/', {
+      const timer = setTimeout(() => controller.abort(), 35_000)
+      const res = await fetch('https://ifconfig.co/json', {
         agent,
         headers: { Accept: 'application/json', 'User-Agent': 'tor-mcp-exit-check' },
         signal: controller.signal,
       })
       clearTimeout(timer)
       const data = await res.json()
-      const got = String(data?.country_code || data?.country || '')
+      const got = String(data?.country_iso || data?.country_code || data?.country || '')
         .trim()
         .toLowerCase()
         .slice(0, 2)
@@ -634,9 +640,9 @@ class TorDaemon {
         ok: Boolean(got),
         ip,
         country: got || null,
-        countryName: data?.country_name || data?.country || null,
+        countryName: data?.country || null,
         matches: expected ? got === expected : null,
-        source: 'ipapi.co',
+        source: 'ifconfig.co',
       }
     } catch (err) {
       return { ok: false, error: err.message || String(err) }
