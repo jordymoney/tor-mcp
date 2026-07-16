@@ -762,10 +762,7 @@ server.tool(
 
       )
 
-      )
-
       if (result.ok) await gateBillableCommit()
-
       return {
 
         content: [{
