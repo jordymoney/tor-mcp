@@ -14,6 +14,8 @@
 
  *   tor_new_circuit  — Request a fresh Tor circuit (new exit IP)
 
+ *   tor_set_exit_country — Prefer exits in one country for clearnet (not .onion)
+
  *   tor_status       — Check daemon health and bootstrap progress
 
  *   tor_unlock       — Apply a purchased unlock key (unlimited use)
@@ -481,6 +483,68 @@ server.tool(
     } catch (err) {
 
       return { content: [{ type: 'text', text: JSON.stringify({ ok: false, error: err.message, mcpVersion: MCP_VERSION }) }] }
+
+    }
+
+  },
+
+)
+
+
+
+server.tool(
+
+  'tor_set_exit_country',
+
+  'Prefer Tor exit nodes in one country for clearnet websites (ISO code like us, ca, de, gb). Pass "any" to clear. Does NOT affect .onion sites. Verifies with a geo lookup when possible. Free — does not count against trial.',
+
+  {
+
+    country: z
+
+      .string()
+
+      .min(2)
+
+      .max(8)
+
+      .describe('Two-letter country code (us, ca, de, gb, nl, …) or "any" to clear'),
+
+  },
+
+  async ({ country }) => {
+
+    try {
+
+      await ensureTor({ onion: false })
+
+      const result = await torDaemon.setExitCountry(country, { verify: true })
+
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] }
+
+    } catch (err) {
+
+      return {
+
+        content: [{
+
+          type: 'text',
+
+          text: JSON.stringify({
+
+            ok: false,
+
+            error: err.message,
+
+            hint: 'Some countries have few Tor exits — try us, de, nl, or gb. .onion traffic ignores exit country.',
+
+            exitCountry: torDaemon.status().exitCountry || null,
+
+          }, null, 2),
+
+        }],
+
+      }
 
     }
 

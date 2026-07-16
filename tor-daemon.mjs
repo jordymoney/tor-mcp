@@ -9,7 +9,7 @@
 import { spawn, execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { createConnection } from 'node:net'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import fetch from 'node-fetch'
@@ -110,7 +110,101 @@ function parseTorVersion(controlText) {
   return m ? m[1].trim() : null
 }
 
-export const MCP_VERSION = '1.3.1'
+export const MCP_VERSION = '1.3.2'
+
+const EXIT_COUNTRY_PATH = resolve(TOR_DATA, 'exit-country.json')
+
+/** ISO 3166-1 alpha-2 — common Tor exit countries (not exhaustive of every relay). */
+const EXIT_COUNTRY_HINTS = {
+  us: 'United States',
+  ca: 'Canada',
+  gb: 'United Kingdom',
+  de: 'Germany',
+  nl: 'Netherlands',
+  fr: 'France',
+  se: 'Sweden',
+  ch: 'Switzerland',
+  at: 'Austria',
+  pl: 'Poland',
+  ro: 'Romania',
+  ua: 'Ukraine',
+  ru: 'Russia',
+  jp: 'Japan',
+  sg: 'Singapore',
+  au: 'Australia',
+  br: 'Brazil',
+  mx: 'Mexico',
+  in: 'India',
+  fi: 'Finland',
+  no: 'Norway',
+  dk: 'Denmark',
+  ie: 'Ireland',
+  es: 'Spain',
+  it: 'Italy',
+  cz: 'Czechia',
+  hu: 'Hungary',
+  bg: 'Bulgaria',
+  lt: 'Lithuania',
+  lv: 'Latvia',
+  ee: 'Estonia',
+  is: 'Iceland',
+  lu: 'Luxembourg',
+  be: 'Belgium',
+  pt: 'Portugal',
+  nz: 'New Zealand',
+  za: 'South Africa',
+  kr: 'South Korea',
+  hk: 'Hong Kong',
+  tw: 'Taiwan',
+  il: 'Israel',
+}
+
+function normalizeCountryCode(input) {
+  if (input == null || input === '') return null
+  const raw = String(input).trim().toLowerCase()
+  if (!raw || raw === 'any' || raw === 'clear' || raw === 'none' || raw === 'off') return null
+  if (!/^[a-z]{2}$/.test(raw)) {
+    const err = new Error('Country must be a 2-letter code like us, ca, de, gb (or "any" to clear)')
+    err.code = 'BAD_COUNTRY'
+    throw err
+  }
+  return raw
+}
+
+function loadExitCountryPref() {
+  try {
+    const raw = JSON.parse(readFileSync(EXIT_COUNTRY_PATH, 'utf8'))
+    return normalizeCountryCode(raw?.country || raw?.code || null)
+  } catch {
+    return null
+  }
+}
+
+function saveExitCountryPref(code) {
+  try {
+    if (!code) {
+      try { unlinkSync(EXIT_COUNTRY_PATH) } catch { /* missing ok */ }
+      return
+    }
+    writeFileSync(
+      EXIT_COUNTRY_PATH,
+      JSON.stringify({ country: code, updatedAt: new Date().toISOString() }, null, 2) + '\n',
+    )
+  } catch {
+    /* best effort */
+  }
+}
+
+function controlOk(buf, label = 'control') {
+  // Tor replies with 250 OK lines; 5xx is failure
+  if (/^5\d\d /m.test(buf) || buf.includes('551 ') || buf.includes('552 ')) {
+    const errLine = buf.split(/\r?\n/).find((l) => /^5\d\d /.test(l)) || buf.trim()
+    throw new Error(`${label} failed: ${errLine}`)
+  }
+  if (!buf.includes('250')) {
+    throw new Error(`${label} unexpected response: ${buf.trim().slice(0, 200)}`)
+  }
+}
 
 function sleep(ms) {
   return new Promise((resolveSleep) => setTimeout(resolveSleep, ms))
@@ -206,6 +300,7 @@ class TorDaemon {
     this.attachFallback = false
     this._refreshTimer = null
     this._onionOpChain = Promise.resolve()
+    this.exitCountry = loadExitCountryPref()
   }
 
   /** Serialize all hidden-service work — parallel fetches break Tor circuits. */
@@ -352,6 +447,7 @@ class TorDaemon {
             this.logs.push(`Startup refresh skipped: ${err.message}`)
           }
           this.startAutoRefresh()
+          await this.applyStoredExitCountry()
           return
         }
         throw new Error(
@@ -433,6 +529,7 @@ class TorDaemon {
       this.attachFallback = false
       this.logs.push('Managed Tor ready with hidden-service support')
       this.startAutoRefresh()
+      await this.applyStoredExitCountry()
     })()
 
     return this._startPromise
@@ -468,6 +565,94 @@ class TorDaemon {
       sock.on('error', reject)
       setTimeout(() => { sock.destroy(); reject(new Error('Control port timeout')) }, 5000)
     })
+  }
+
+  /**
+   * Prefer exits in one country for clearnet fetches.
+   * .onion hidden services do NOT use exit nodes — this only affects normal websites.
+   * @param {string|null} country ISO alpha-2 or null/"any" to clear
+   * @param {{ verify?: boolean }} opts
+   */
+  async setExitCountry(country, opts = {}) {
+    const code = normalizeCountryCode(country)
+    if (!(await portOpen(CONTROL_PORT))) {
+      throw new Error(`Control port ${CONTROL_PORT} not available — start Tor first`)
+    }
+
+    const commands = code
+      ? [`SETCONF ExitNodes={${code}}`, 'SETCONF StrictNodes=1']
+      : ['RESETCONF ExitNodes', 'RESETCONF StrictNodes']
+
+    const buf = await controlTalk(commands, 12_000)
+    controlOk(buf, 'SETCONF ExitNodes')
+
+    this.exitCountry = code
+    saveExitCountryPref(code)
+    this.logs.push(code ? `Exit country set to {${code}} (strict)` : 'Exit country cleared (any)')
+
+    await this.newCircuit()
+    // Give Tor a moment to build a new exit circuit
+    await sleep(3500)
+
+    let verified = null
+    if (opts.verify !== false && code) {
+      verified = await this.verifyExitCountry(code)
+    }
+
+    return {
+      ok: true,
+      exitCountry: code,
+      exitCountryName: code ? EXIT_COUNTRY_HINTS[code] || null : null,
+      strictNodes: Boolean(code),
+      note: code
+        ? `Clearnet exits prefer {${code}}. .onion sites ignore this setting.`
+        : 'Exit country cleared — Tor picks any exit.',
+      verified,
+      hints: Object.keys(EXIT_COUNTRY_HINTS).sort(),
+    }
+  }
+
+  /** Best-effort geo check of current clearnet exit (not perfect; CDNs lie). */
+  async verifyExitCountry(expected) {
+    try {
+      const agent = new SocksProxyAgent(`socks5h://127.0.0.1:${SOCKS_PORT}`)
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), 45_000)
+      const res = await fetch('https://ipapi.co/json/', {
+        agent,
+        headers: { Accept: 'application/json', 'User-Agent': 'tor-mcp-exit-check' },
+        signal: controller.signal,
+      })
+      clearTimeout(timer)
+      const data = await res.json()
+      const got = String(data?.country_code || data?.country || '')
+        .trim()
+        .toLowerCase()
+        .slice(0, 2)
+      const ip = data?.ip || null
+      return {
+        ok: Boolean(got),
+        ip,
+        country: got || null,
+        countryName: data?.country_name || data?.country || null,
+        matches: expected ? got === expected : null,
+        source: 'ipapi.co',
+      }
+    } catch (err) {
+      return { ok: false, error: err.message || String(err) }
+    }
+  }
+
+  async applyStoredExitCountry() {
+    const code = this.exitCountry ?? loadExitCountryPref()
+    this.exitCountry = code
+    if (!code) return null
+    try {
+      return await this.setExitCountry(code, { verify: false })
+    } catch (err) {
+      this.logs.push(`Could not apply exit country {${code}}: ${err.message}`)
+      return { ok: false, error: err.message }
+    }
   }
 
   async shutdownTorOnPorts() {
@@ -533,6 +718,8 @@ class TorDaemon {
       socksPort: SOCKS_PORT,
       controlPort: CONTROL_PORT,
       proxyUrl: this.proxyUrl,
+      exitCountry: this.exitCountry,
+      exitCountryName: this.exitCountry ? EXIT_COUNTRY_HINTS[this.exitCountry] || null : null,
       recentLog: this.logs.slice(-5),
     }
     if (OPERATOR_MODE) {

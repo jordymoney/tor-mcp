@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.3.2] — 2026-07-16 — Exit country preference
+
+### Added
+- **`tor_set_exit_country`** — prefer Tor exits in one country for clearnet (`us`, `ca`, `de`, `gb`, …). Pass `any` to clear.
+- Preference persists in `tor-data/exit-country.json` and re-applies on Tor start.
+- Optional geo verify via ifconfig.co after switching.
+- `tor_status` now includes `exitCountry` / `exitCountryName`.
+
+### Note
+- Exit country only affects **clearnet** websites. `.onion` hidden services do not use exit nodes.
+
 ## [1.3.1] — 2026-07-15 — Pay-per-call permits
 
 ### Added
