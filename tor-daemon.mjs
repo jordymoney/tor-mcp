@@ -110,7 +110,7 @@ function parseTorVersion(controlText) {
   return m ? m[1].trim() : null
 }
 
-export const MCP_VERSION = '1.3.4'
+export const MCP_VERSION = '1.3.5'
 
 const EXIT_COUNTRY_PATH = resolve(TOR_DATA, 'exit-country.json')
 

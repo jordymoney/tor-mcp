@@ -52,7 +52,15 @@ import { SocksProxyAgent } from 'socks-proxy-agent'
 
 import { torDaemon, ensureTor, MCP_VERSION, isRecoverableTorError, isInstantSocksReject } from './tor-daemon.mjs'
 
-import { gateBillableCheck, gateBillableCommit, getQuotaStatus, initUsageGate, verifyAndUnlock, addCallPermit } from './usage-gate.mjs'
+import {
+  gateBillableCheck,
+  gateBillableCommit,
+  getQuotaStatus,
+  initUsageGate,
+  verifyAndUnlock,
+  addCallPermit,
+  sendTrialHeartbeat,
+} from './usage-gate.mjs'
 
 import { runResearch, runGeoCompare } from './research.mjs'
 
@@ -64,6 +72,7 @@ const licenseInit = await initUsageGate()
 if (!licenseInit.ok) {
   process.stderr.write(`[tor-mcp] ${licenseInit.message}\n`)
 }
+void sendTrialHeartbeat({ force: true }).catch(() => {})
 
 torDaemon.start().catch((err) => {
 

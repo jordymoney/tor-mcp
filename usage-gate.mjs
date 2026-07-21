@@ -10,6 +10,7 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { randomUUID } from 'node:crypto'
 import fetch from 'node-fetch'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -18,15 +19,95 @@ const USAGE_PATH = resolve(TOR_DATA, 'usage-gate.json')
 const UNLOCK_PATH = resolve(TOR_DATA, 'unlock.key')
 const UNLOCK_META_PATH = resolve(TOR_DATA, 'unlock.meta.json')
 const CALL_PERMITS_PATH = resolve(TOR_DATA, 'call-permits.json')
+const ANON_ID_PATH = resolve(TOR_DATA, 'anon-id')
+const TELEMETRY_META_PATH = resolve(TOR_DATA, 'telemetry.json')
 
 export const FREE_LIMIT = Math.max(1, parseInt(process.env.TOR_MCP_FREE_USES || '25', 10))
 const VERIFY_URL = (process.env.TOR_MCP_VERIFY_URL || 'https://aizamon.com/api/tor-mcp/verify').replace(/\/$/, '')
+const EVENTS_URL = (process.env.TOR_MCP_EVENTS_URL || 'https://aizamon.com/api/tor-mcp/events').replace(/\/$/, '')
 const UNLOCK_URL = process.env.TOR_MCP_UNLOCK_URL || 'https://aizamon.com/client?sku=SKU_TOR_MCP_PRO'
 const CALL_PERMIT_REDEEM_URL = (
   process.env.TOR_MCP_CALL_PERMIT_URL || 'https://aizamon.com/api/v1/tor-call-permit'
 ).replace(/\/$/, '')
 const CALL_BUY_URL = process.env.TOR_MCP_CALL_BUY_URL || 'https://aizamon.com/x402/v1/tor-call'
 const OFFLINE_GRACE_MS = 7 * 24 * 60 * 60 * 1000
+const TELEMETRY_MIN_INTERVAL_MS = 60 * 60 * 1000
+
+function packageVersion() {
+  try {
+    return JSON.parse(readFileSync(resolve(HERE, 'package.json'), 'utf8')).version || 'unknown'
+  } catch {
+    return 'unknown'
+  }
+}
+
+function telemetryEnabled() {
+  const v = String(process.env.TOR_MCP_TELEMETRY ?? '1').trim().toLowerCase()
+  return !(v === '0' || v === 'false' || v === 'no' || v === 'off')
+}
+
+function getOrCreateAnonId() {
+  ensureDataDir()
+  if (existsSync(ANON_ID_PATH)) {
+    try {
+      const existing = readFileSync(ANON_ID_PATH, 'utf8').trim()
+      if (existing) return existing
+    } catch { /* recreate below */ }
+  }
+  const id = randomUUID()
+  try {
+    writeFileSync(ANON_ID_PATH, id, { mode: 0o600 })
+  } catch { /* ignore */ }
+  return id
+}
+
+function loadTelemetryMeta() {
+  if (!existsSync(TELEMETRY_META_PATH)) return {}
+  try {
+    return JSON.parse(readFileSync(TELEMETRY_META_PATH, 'utf8')) || {}
+  } catch {
+    return {}
+  }
+}
+
+function saveTelemetryMeta(meta) {
+  ensureDataDir()
+  writeFileSync(TELEMETRY_META_PATH, JSON.stringify(meta, null, 2), { mode: 0o600 })
+}
+
+/**
+ * Anonymous trial heartbeat (no unlock key, no paths).
+ * Throttled to once/hour unless force=true (boot).
+ */
+export async function sendTrialHeartbeat({ force = false } = {}) {
+  if (!telemetryEnabled()) return { ok: false, skipped: 'opt_out' }
+  const meta = loadTelemetryMeta()
+  const last = Number(meta.lastHeartbeatAt) || 0
+  if (!force && Date.now() - last < TELEMETRY_MIN_INTERVAL_MS) {
+    return { ok: false, skipped: 'throttled' }
+  }
+  const quota = getQuotaStatus()
+  const body = {
+    event: 'heartbeat',
+    anonId: getOrCreateAnonId(),
+    uses: quota.used,
+    freeLimit: quota.freeLimit,
+    unlocked: Boolean(quota.unlocked),
+    version: packageVersion(),
+  }
+  try {
+    const resp = await fetch(EVENTS_URL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(8_000),
+    })
+    saveTelemetryMeta({ ...meta, lastHeartbeatAt: Date.now() })
+    return { ok: resp.ok, status: resp.status }
+  } catch (err) {
+    return { ok: false, error: err.message || String(err) }
+  }
+}
 
 let unlockVerified = false
 let unlockOfflineGrace = false
@@ -353,9 +434,13 @@ export async function gateBillableCheck(toolName) {
 
 /** Consume one trial use after a successful billable operation (skip if permit already redeemed). */
 export function gateBillableCommit() {
-  if (isUnlocked()) return
+  if (isUnlocked()) {
+    void sendTrialHeartbeat({ force: false })
+    return
+  }
   if (permitAuthorizedForNextCommit) {
     permitAuthorizedForNextCommit = false
+    void sendTrialHeartbeat({ force: false })
     return
   }
   return withGateLock(async () => {
@@ -364,6 +449,7 @@ export function gateBillableCommit() {
       state.uses += 1
       saveState(state)
     }
+    void sendTrialHeartbeat({ force: false })
   })
 }
 

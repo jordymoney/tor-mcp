@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.5] — 2026-07-21 — Anonymous trial telemetry
+
+### Added
+- Optional anonymous heartbeats to `POST /api/tor-mcp/events` on MCP boot and after billable commits (throttled once/hour).
+- Local `tor-data/anon-id` (random UUID; server stores only a hash).
+- Opt out with `TOR_MCP_TELEMETRY=0` (default on).
+
 ## [1.3.4] — 2026-07-21 — Easier free trial
 
 ### Changed
