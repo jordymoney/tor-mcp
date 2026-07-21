@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.4] — 2026-07-21 — Easier free trial
+
+### Changed
+- Free trial default raised **5 → 25** successful billable uses (`TOR_MCP_FREE_USES` still overrides).
+- **`tor_new_circuit` is free** — rotating exits no longer burns trial uses.
+- Billable tools: `tor_fetch`, `tor_post`, `tor_research`, `tor_geo_compare` only.
+
 ## [1.3.3] — 2026-07-16 — Research pack + geo deal scout
 
 ### Added

@@ -1,6 +1,6 @@
 {
   "name": "tor-mcp",
-  "version": "1.3.3",
+  "version": "1.3.4",
   "type": "module",
   "description": "MCP server giving Cursor AI safe private access through a managed Tor daemon",
   "main": "server.mjs",

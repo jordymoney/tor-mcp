@@ -30,7 +30,9 @@
 
  *
 
- * Free tier: 5 successful billable uses (fetch/post/circuit/research/geo) without unlock.
+ * Free tier: 25 successful billable uses (fetch/post/research/geo) without unlock.
+
+ * Circuit rotate + status + exit country are free (do not burn trial).
 
  * All DNS resolves inside Tor (socks5h). No clearnet DNS leaks.
 
@@ -298,7 +300,7 @@ server.tool(
 
   'tor_post',
 
-  'POST data to a URL through the Tor network. Use for form submissions, API calls, or .onion services. Counts against the 5-use free trial (then call permit or Pro).',
+  'POST data to a URL through the Tor network. Use for form submissions, API calls, or .onion services. Counts against the free trial (then call permit or Pro).',
 
   {
 
@@ -392,27 +394,15 @@ server.tool(
 
   'tor_new_circuit',
 
-  'Ask Tor for a fresh circuit — your apparent exit IP changes within a few seconds. Counts against the 5-use free trial (then call permit or Pro).',
+  'Ask Tor for a fresh circuit — your apparent exit IP changes within a few seconds. Free — does not count against the trial.',
 
   {},
 
   async () => {
 
-    const gate = await gateBillableCheck('tor_new_circuit')
-
-    if (!gate.allowed) {
-
-      return { content: [{ type: 'text', text: JSON.stringify(blockedPayload(gate), null, 2) }] }
-
-    }
-
-
-
     try {
 
       const result = await torDaemon.newCircuit()
-
-      await gateBillableCommit()
 
       return {
 
@@ -429,8 +419,6 @@ server.tool(
             ...result,
 
             _quota: getQuotaStatus(),
-
-            _trialWarning: gate.trialWarning || undefined,
 
           }),
 
@@ -869,7 +857,7 @@ server.tool(
 
   'tor_unlock',
 
-  'Apply your Tor MCP Pro unlock key from aizamon.com (SKU_TOR_MCP_PRO). Removes the 5-use trial limit on this machine. Does not count against trial.',
+  'Apply your Tor MCP Pro unlock key from aizamon.com (SKU_TOR_MCP_PRO). Removes the free-trial limit on this machine. Does not count against trial.',
 
   {
 

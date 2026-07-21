@@ -25,7 +25,7 @@ Most AI agent web tools make requests directly from your machine's IP. Every API
 |------|-------------|-------|
 | `tor_fetch` | GET any URL (clearnet or `.onion`) through Tor. DNS resolves inside Tor — no leaks. | 1 use on success |
 | `tor_post` | POST data through Tor. | 1 use on success |
-| `tor_new_circuit` | Request a fresh circuit — your apparent exit IP rotates within ~3 seconds. | 1 use on success |
+| `tor_new_circuit` | Request a fresh circuit — your apparent exit IP rotates within ~3 seconds. | Free |
 | `tor_set_exit_country` | Prefer exits in one country for **clearnet** (`us`, `de`, …). Pass `any` to clear. Not for `.onion`. | Free |
 | `tor_research` | Search (DDG onion) and/or fetch URLs; extract title, prices, stock, snippets as JSON. | 1 use on success |
 | `tor_geo_compare` | Deal scout: `urls[]` locale pages (recommended) or same URL via exit countries. | 1 use on success |
@@ -37,7 +37,7 @@ Most AI agent web tools make requests directly from your machine's IP. Every API
 
 ## Free trial & unlock
 
-**5 free successful uses** — `tor_fetch`, `tor_post`, `tor_new_circuit`, `tor_research`, and `tor_geo_compare` each count **once per successful operation** (failed requests do not consume trial uses). `tor_status`, `tor_set_exit_country`, `tor_unlock`, and `tor_restart` are always free.
+**25 free successful uses** — `tor_fetch`, `tor_post`, `tor_research`, and `tor_geo_compare` each count **once per successful operation** (failed requests do not consume trial uses). `tor_new_circuit`, `tor_status`, `tor_set_exit_country`, `tor_unlock`, and `tor_restart` are always free.
 
 When the trial runs out, network tools return an unlock message instead of fetching. Check remaining quota anytime:
 
@@ -119,7 +119,7 @@ Run `tor_status` to confirm `running: true` and `onionOk: true` before fetching 
 
 ### Trial / unlock
 
-- Failed fetches **do not** count against the 5-use trial.
+- Failed fetches **do not** count against the free trial.
 - Keys must verify online at startup (7-day offline grace after first successful verify).
 - Revoked keys stop working on next online verify.
 

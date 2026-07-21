@@ -1,7 +1,8 @@
 /**
  * Free-tier usage gate for Tor MCP network tools.
- * tor_fetch, tor_post, and tor_new_circuit count against the trial (on success only).
- * tor_status, tor_unlock, tor_add_call_permit, and tor_restart are always free.
+ * Billable (on success): tor_fetch, tor_post, tor_research, tor_geo_compare.
+ * Always free: tor_status, tor_unlock, tor_add_call_permit, tor_restart, tor_new_circuit,
+ * tor_set_exit_country (circuit rotates should not burn the trial).
  *
  * After the free trial: either SKU_TOR_MCP_PRO unlock (unlimited) OR per-call permits
  * from GET /x402/v1/tor-call → result.torCallPermit.token (SKU_AG_TOR_CALL_01).
@@ -18,7 +19,7 @@ const UNLOCK_PATH = resolve(TOR_DATA, 'unlock.key')
 const UNLOCK_META_PATH = resolve(TOR_DATA, 'unlock.meta.json')
 const CALL_PERMITS_PATH = resolve(TOR_DATA, 'call-permits.json')
 
-export const FREE_LIMIT = Math.max(1, parseInt(process.env.TOR_MCP_FREE_USES || '5', 10))
+export const FREE_LIMIT = Math.max(1, parseInt(process.env.TOR_MCP_FREE_USES || '25', 10))
 const VERIFY_URL = (process.env.TOR_MCP_VERIFY_URL || 'https://aizamon.com/api/tor-mcp/verify').replace(/\/$/, '')
 const UNLOCK_URL = process.env.TOR_MCP_UNLOCK_URL || 'https://aizamon.com/client?sku=SKU_TOR_MCP_PRO'
 const CALL_PERMIT_REDEEM_URL = (
@@ -279,7 +280,7 @@ export function getQuotaStatus() {
     used,
     remaining: unlocked ? null : Math.max(0, limit - used),
     callPermitsQueued,
-    billableTools: ['tor_fetch', 'tor_post', 'tor_new_circuit'],
+    billableTools: ['tor_fetch', 'tor_post', 'tor_research', 'tor_geo_compare'],
     unlockUrl: UNLOCK_URL,
     callBuyUrl: CALL_BUY_URL,
   }
