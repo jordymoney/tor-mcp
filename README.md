@@ -4,6 +4,8 @@
 
 `tor-mcp` is a [Model Context Protocol](https://modelcontextprotocol.io) server that spins up and manages a Tor daemon, then exposes clean tools so any AI agent (Cursor, Claude Desktop, etc.) can fetch URLs anonymously, rotate its exit IP, and access `.onion` hidden services — without touching a browser.
 
+**One-command Windows install:** [`irm https://aizamon.com/install/Install-TorMcp.ps1 | iex`](https://aizamon.com/install/tor-mcp) · **npm:** `npx tor-mcp` (after publish) · **Companion commerce MCP:** [`aizamon-mcp/`](./aizamon-mcp/)
+
 ---
 
 ## Why
@@ -111,7 +113,7 @@ Run `tor_status` to confirm `running: true` and `onionOk: true` before fetching 
 
 ### `.onion` fails
 
-1. **`tor_status`** — look for `onionOk: true` and `mcpVersion: "1.3.0"`.
+1. **`tor_status`** — look for `onionOk: true` and a current `mcpVersion`.
 2. **`tor_restart`** — free recovery tool; wait ~30s, then retry.
 3. **Port conflict** — if something else uses `9055`/`9056` (Tor Browser uses `9050`/`9051`), quit it or run `scripts/Restart-TorMcp.ps1`, then reload Cursor.
 4. **One fetch at a time** — do not batch parallel `.onion` requests; tor-mcp serializes them automatically.
@@ -175,16 +177,46 @@ Ports `9055`/`9056` avoid conflict with Tor Browser (`9050`/`9051`).
 
 ```
 tor-mcp/
-├── server.mjs          # MCP server (tools + usage gate)
+├── server.mjs          # Tor MCP server (tools + usage gate)
 ├── usage-gate.mjs      # Trial + online key verification
 ├── tor-daemon.mjs      # Tor process manager + HS warmup
+├── research.mjs        # tor_research / tor_geo_compare helpers
 ├── torrc               # Tor configuration (client-only)
 ├── setup.ps1           # Windows: downloads Tor Expert Bundle
+├── aizamon-mcp/        # Companion: Aizamon commerce MCP (store, feeds, checkout)
+├── docs/
+│   ├── MARKETING.md    # Show HN / Reddit / directory blast drafts
+│   └── GAP-REPORT-TEMPLATE.md
 ├── scripts/
+│   ├── Install-AizamonMcp.ps1
+│   ├── install-aizamon-mcp.sh
 │   ├── Restart-TorMcp.ps1
 │   └── sweep-onions.mjs
 └── tor-bin/            # tor.exe after setup (git-ignored)
 ```
+
+---
+
+## Companion: Aizamon MCP (make money lane)
+
+Same repo, different job. [`aizamon-mcp/`](./aizamon-mcp/) talks to **aizamon.com** so Cursor can:
+
+- Read free Venue Wire gaps + alpha preview
+- Open a `$0.25` Bot Fuel purchase intent
+- Fulfill / settle after USDC payment
+- Hand you a human Stripe link for **Tor MCP Pro**
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/Install-AizamonMcp.ps1
+```
+
+```bash
+bash scripts/install-aizamon-mcp.sh your-stable-bot-id
+```
+
+Runs on **your PC** (stdio MCP). Backend stays on aizamon.com — not Render for the MCP process.
+
+Distribution copy: [`docs/MARKETING.md`](./docs/MARKETING.md).
 
 ---
 
