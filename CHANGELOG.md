@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.3.6] — 2026-07-24 — Money funnel: Aizamon MCP + distribution
+
+### Added
+- **`aizamon-mcp/`** — Cursor/Claude commerce MCP for aizamon.com (free gaps/preview, store, purchase-intent, fulfill, settle, Tor Pro checkout links).
+- **`scripts/Install-AizamonMcp.ps1`** + **`scripts/install-aizamon-mcp.sh`** — wire `aizamon` into `~/.cursor/mcp.json`.
+- **`docs/MARKETING.md`** — Show HN, Reddit, X, Polymarket post drafts + npm/directory checklist.
+- **`docs/GAP-REPORT-TEMPLATE.md`** — daily Venue Wire post template.
+- **`npm` bin/files/keywords** — `npx tor-mcp` ready; `@aizamon/mcp` package metadata under `aizamon-mcp/`.
+- **`npm run smoke:aizamon`** — live free-endpoint + MCP boot smoke test.
+
+### Changed
+- README points at one-command install, companion commerce MCP, and marketing docs.
+
 ## [1.3.5] — 2026-07-21 — Anonymous trial telemetry
 
 ### Added
