@@ -64,7 +64,7 @@
 ### Changed
 - Removed customer docs for bypass env vars (`TOR_MCP_OPERATOR`, `TOR_MCP_FREE_USES`).
 - Operator/dev flags hidden from `tor_status` unless `TOR_MCP_OPERATOR=1`.
-- README: trial-on-success, support, troubleshooting, correct pricing ($12 / ~$7.80 agent).
+- README: trial-on-success, support, and troubleshooting.
 
 ## [1.2.5] — 2026-07-02
 
