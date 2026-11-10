@@ -45,7 +45,7 @@ When the trial runs out, network tools return an unlock message instead of fetch
 tor_status()
 ```
 
-**Unlock unlimited use** — [$12 one-time at aizamon.com](https://aizamon.com/client?sku=SKU_TOR_MCP_PRO) (wallet agents: ~$7.80 USDC via [agent store](https://aizamon.com/agent-store.json)):
+**Unlock unlimited use** — [$19 on a card at aizamon.com](https://aizamon.com/client?sku=SKU_TOR_MCP_PRO) (wallet agents: $12.35 USDC via [agent store](https://aizamon.com/agent-store.json)):
 
 1. [Buy Tor MCP Pro](https://aizamon.com/client?sku=SKU_TOR_MCP_PRO) — key emailed after checkout.
 2. In Cursor, run `tor_unlock` with your key **once**, or add to `~/.cursor/mcp.json`:
